@@ -1,0 +1,47 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "PackageStructure": ["<PackageStructure>"]
+  "WindowPin-arm64-apple-macosx-debug.module": ["<WindowPin-arm64-apple-macosx-debug.module>"]
+  "main": ["<WindowPin-arm64-apple-macosx-debug.module>"]
+  "test": ["<WindowPin-arm64-apple-macosx-debug.module>"]
+default: "main"
+nodes:
+  "/Users/shakib/Desktop/window-pin/Sources/WindowPin/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+commands:
+  "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/shakib/Desktop/window-pin/Sources/WindowPin/MenuBuilder.swift","/Users/shakib/Desktop/window-pin/Sources/WindowPin/PinOverlay.swift","/Users/shakib/Desktop/window-pin/Sources/WindowPin/SelectionOverlay.swift","/Users/shakib/Desktop/window-pin/Sources/WindowPin/WindowManager.swift","/Users/shakib/Desktop/window-pin/Sources/WindowPin/WindowPinApp.swift"]
+    outputs: ["/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/sources"]
+    description: "Write auxiliary file /Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/sources"
+
+  "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Library/Developer/CommandLineTools/usr/bin/swiftc"]
+    outputs: ["/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+
+  "<WindowPin-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/Modules/WindowPin.swiftmodule"]
+    outputs: ["<WindowPin-arm64-apple-macosx-debug.module>"]
+
+  "C.WindowPin-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/shakib/Desktop/window-pin/Sources/WindowPin/MenuBuilder.swift","/Users/shakib/Desktop/window-pin/Sources/WindowPin/PinOverlay.swift","/Users/shakib/Desktop/window-pin/Sources/WindowPin/SelectionOverlay.swift","/Users/shakib/Desktop/window-pin/Sources/WindowPin/WindowManager.swift","/Users/shakib/Desktop/window-pin/Sources/WindowPin/WindowPinApp.swift","/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt","/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/sources"]
+    outputs: ["/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/Modules/WindowPin.swiftmodule"]
+    description: "Compiling Swift Module 'WindowPin' (5 sources)"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-module-name","WindowPin","-emit-dependencies","-emit-module","-emit-module-path","/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/Modules/WindowPin.swiftmodule","-output-file-map","/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/output-file-map.json","-incremental","@/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/sources","-I","/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx14.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-Onone","-enable-testing","-j10","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","WindowPin_main","-swift-version","5","-Xfrontend","-experimental-lazy-typecheck","-Xfrontend","-experimental-skip-all-function-bodies","-Xfrontend","-experimental-allow-module-with-compiler-errors","-Xfrontend","-empty-abi-descriptor","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xcc","-isysroot","-Xcc","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-Xcc","-fPIC","-Xcc","-g","-package-name","window_pin"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/shakib/Desktop/window-pin/Sources/WindowPin/","/Users/shakib/Desktop/window-pin/Package.swift","/Users/shakib/Desktop/window-pin/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+
