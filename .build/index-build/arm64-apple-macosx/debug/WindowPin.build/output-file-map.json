@@ -1,0 +1,35 @@
+{
+  "": {
+    "swift-dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/primary.swiftdeps"
+  },
+  "/Users/shakib/Desktop/window-pin/Sources/WindowPin/MenuBuilder.swift": {
+    "dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/MenuBuilder.d",
+    "object": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/MenuBuilder.swift.o",
+    "swiftmodule": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/MenuBuilder~partial.swiftmodule",
+    "swift-dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/MenuBuilder.swiftdeps",
+    "diagnostics": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/MenuBuilder.dia"  },
+  "/Users/shakib/Desktop/window-pin/Sources/WindowPin/PinOverlay.swift": {
+    "dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/PinOverlay.d",
+    "object": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/PinOverlay.swift.o",
+    "swiftmodule": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/PinOverlay~partial.swiftmodule",
+    "swift-dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/PinOverlay.swiftdeps",
+    "diagnostics": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/PinOverlay.dia"  },
+  "/Users/shakib/Desktop/window-pin/Sources/WindowPin/SelectionOverlay.swift": {
+    "dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/SelectionOverlay.d",
+    "object": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/SelectionOverlay.swift.o",
+    "swiftmodule": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/SelectionOverlay~partial.swiftmodule",
+    "swift-dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/SelectionOverlay.swiftdeps",
+    "diagnostics": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/SelectionOverlay.dia"  },
+  "/Users/shakib/Desktop/window-pin/Sources/WindowPin/WindowManager.swift": {
+    "dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/WindowManager.d",
+    "object": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/WindowManager.swift.o",
+    "swiftmodule": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/WindowManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/WindowManager.swiftdeps",
+    "diagnostics": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/WindowManager.dia"  },
+  "/Users/shakib/Desktop/window-pin/Sources/WindowPin/WindowPinApp.swift": {
+    "dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/WindowPinApp.d",
+    "object": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/WindowPinApp.swift.o",
+    "swiftmodule": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/WindowPinApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/WindowPinApp.swiftdeps",
+    "diagnostics": "/Users/shakib/Desktop/window-pin/.build/index-build/arm64-apple-macosx/debug/WindowPin.build/WindowPinApp.dia"  }
+}
