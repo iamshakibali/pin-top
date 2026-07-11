@@ -1,7 +1,8 @@
 import Cocoa
 import CoreGraphics
 
-// A borderless, always-on-top overlay window that mirrors a pinned window's snapshot.
+// MARK: - PinOverlayWindow
+
 class PinOverlayWindow: NSWindow {
     private let imageView = NSImageView()
     private var windowID: CGWindowID
@@ -16,6 +17,8 @@ class PinOverlayWindow: NSWindow {
         )
         self.isOpaque = false
         self.backgroundColor = .clear
+        // ponytail: no shadow — recompute on every reposition causes ghost trail
+        // during move. Spec said false; the rounded-corner clip is the only edge.
         self.hasShadow = false
         self.level = .statusBar + 1 // above all normal windows
         self.ignoresMouseEvents = true // clicks pass through to the window below
@@ -26,9 +29,15 @@ class PinOverlayWindow: NSWindow {
         imageView.image = snapshot
         imageView.frame = NSRect(origin: .zero, size: frame.size)
         imageView.imageScaling = .scaleAxesIndependently
+        imageView.autoresizingMask = [.width, .height]
         imageView.wantsLayer = true
         imageView.layer?.contentsGravity = .resizeAspectFill
         imageView.layer?.backgroundColor = NSColor.clear.cgColor
+        // Modern macOS windows clip their content to a ~10pt rounded
+        // rectangle. Without matching that here the overlay's square
+        // corners poke out past the source window's rounded ones.
+        imageView.layer?.cornerRadius = 10
+        imageView.layer?.masksToBounds = true
 
         self.contentView = imageView
     }
@@ -39,9 +48,4 @@ class PinOverlayWindow: NSWindow {
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
-
-    override func close() {
-        contentView = nil
-        super.close()
-    }
 }

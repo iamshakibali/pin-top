@@ -2,20 +2,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "WindowPin",
+    name: "PinTop",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .executable(
-            name: "WindowPin",
-            targets: ["WindowPin"]
+            name: "PinTop",
+            targets: ["PinTop"]
         ),
     ],
     targets: [
         .executableTarget(
-            name: "WindowPin",
-            path: "Sources/WindowPin"
+            name: "PinTop",
+            path: "Sources/PinTop"
         ),
     ]
 )
