@@ -1,0 +1,19 @@
+# Swift build artifacts
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+
+# Bundled app (built locally, do not track)
+PinTop.app/
+
+# macOS
+.DS_Store
+
+# Signing / local certs (never commit keys)
+*.p12
+*.pem
