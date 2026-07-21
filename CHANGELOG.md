@@ -13,6 +13,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-monitor / Space awareness
 - Sparkle-based auto-update
 
+## [0.1.1] — 2026-07-21
+
+Maintenance update over the first beta.
+
+### Fixed
+- Clicking a pinned overlay when another app covers it no longer selects the
+  covering app. The overlay now detects when the source window is buried and
+  re-activates the source app to bring the real window forward, so you can
+  interact with the pinned window's contents (buttons, fields) instead of the
+  overlapping app underneath.
+- Reduced refresh-loop cost: burial detection is now an O(1) frontmost-app
+  check instead of a 60 Hz full-window enumeration, so the click-to-front
+  response feels immediate.
+
+### Known limitations
+- Minor: in a multi-window app, if the source app is already frontmost but a
+  **sibling** window of that app covers the pinned one, the click-through
+  still falls to that sibling rather than re-fronting the exact pinned window.
+  We'll address sibling-window coverage in a follow-up.
+
 ## [0.1.0] — 2026-07-17
 
 First public beta.
