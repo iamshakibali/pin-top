@@ -47,6 +47,16 @@ struct PinTopApp: App {
 
         menu.addItem(NSMenuItem.separator())
 
+        let aboutItem = NSMenuItem(title: "About Pin Top", action: #selector(AppDelegate.aboutMenuItem), keyEquivalent: "")
+        aboutItem.target = appDelegate
+        menu.addItem(aboutItem)
+
+        let updatesItem = NSMenuItem(title: "Check for Updates", action: #selector(AppDelegate.checkUpdatesMenuItem), keyEquivalent: "")
+        updatesItem.target = appDelegate
+        menu.addItem(updatesItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let quitItem = NSMenuItem(title: "Quit Pin Top", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
         // target must stay nil — terminate(_:) walks the responder chain to
         // NSApplication. Setting it to appDelegate shadows that and the quit
@@ -61,6 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var windowManager: WindowManager?
     private var selectionOverlayWindows: [SelectionOverlayWindow] = []
+    private var aboutWindow: AboutWindow?
 
     override init() {
         super.init()
@@ -78,7 +89,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Close any non-overlay window immediately.
         DispatchQueue.main.async {
             for window in NSApp.windows {
-                if !(window is PinOverlayWindow) {
+                if !(window is PinOverlayWindow) && !(window is AboutWindow) {
                     window.close()
                 }
             }
@@ -120,6 +131,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowManager?.unpinAll()
         DispatchQueue.main.async { [weak self] in
             self?.updateMenu()
+        }
+    }
+
+    @objc func aboutMenuItem() {
+        if aboutWindow == nil {
+            aboutWindow = AboutWindow()
+        }
+        aboutWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func checkUpdatesMenuItem() {
+        AppUpdater.shared.checkForUpdates { state in
+            // Show a simple alert for menu-triggered updates
+            switch state {
+            case .upToDate:
+                let alert = NSAlert()
+                alert.messageText = "You're up to date!"
+                alert.informativeText = "Pin Top is already running the latest version."
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            case .available(let version):
+                let alert = NSAlert()
+                alert.messageText = "Update Available"
+                alert.informativeText = "Pin Top \(version) is being downloaded and installed."
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            case .error(let msg):
+                let alert = NSAlert()
+                alert.messageText = "Update Check Failed"
+                alert.informativeText = msg
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            default:
+                break
+            }
         }
     }
 

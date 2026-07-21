@@ -8,10 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- Global hotkey to toggle pin mode
 - Per-window live refresh
 - Multi-monitor / Space awareness
-- Sparkle-based auto-update
+
+## [0.3.0] — 2026-07-22
+
+### Added
+- **About panel** — accessible from the menu bar. Shows app icon, version, developer info ("by Shakib" with GitHub link), and an integrated **Check for Updates** button.
+- **In-app auto-update** — checks GitHub Releases for newer versions, downloads the update, and atomically replaces the app bundle. No browser or manual download required.
+- Global hotkey to toggle pin mode (planned, moved to next release).
 
 ## [0.2.0] — 2026-07-21
 
