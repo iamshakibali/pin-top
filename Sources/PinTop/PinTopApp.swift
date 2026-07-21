@@ -12,7 +12,9 @@ struct PinTopApp: App {
     }
 
     var body: some Scene {
-        Settings {}
+        Settings {
+            EmptyView()
+        }
     }
 
     private func setupMenuBar() {
@@ -72,6 +74,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Belt-and-suspenders: SwiftUI may reset state after init.
         ProcessInfo.processInfo.disableAutomaticTermination("Pin Top runs in the menu bar")
+        // Menu-bar only app — SwiftUI's Settings scene auto-opens on launch.
+        // Close any non-overlay window immediately.
+        DispatchQueue.main.async {
+            for window in NSApp.windows {
+                if !(window is PinOverlayWindow) {
+                    window.close()
+                }
+            }
+        }
     }
 
     // Never quit just because the last NSWindow went away — the menu bar icon

@@ -324,6 +324,16 @@ func exitSelectionMode() {
             }
         }
 
+        // ponytail: suppress recapture while source app is frontmost.
+        // CGWindowListCreateImage blocks the source app's window-server
+        // port during the snapshot — when the user is actively typing or
+        // editing, the capture ⟷ text-invalidation contention is the root
+        // cause of the typing lag (#7). The real window covers the overlay
+        // entirely while frontmost, so capturing provides zero visible
+        // benefit. Capture resumes on the next idle tick once the window
+        // becomes buried.
+        let sourceIsFrontmost = frontmostPID == currentWindow.pid
+
         // Recapture decision:
         //  - move (size unchanged): NEVER recapture — bitmap is already valid
         //  - idle pinned window: every idleRecaptureInterval (~5×/sec) so
@@ -336,7 +346,7 @@ func exitSelectionMode() {
         // Content is identical on a move, so the existing bitmap is still valid —
         // a mid-move bitmap swap only flickers. Idle refresh resumes once stationary.
         let idleRecaptureActive = idleRecaptureDue && !boundsChanged
-        let shouldRecapture = idleRecaptureActive || (sizeChanged && resizeRecaptureDue) || settleRecaptureDue
+        let shouldRecapture = !sourceIsFrontmost && (idleRecaptureActive || (sizeChanged && resizeRecaptureDue) || settleRecaptureDue)
         if shouldRecapture {
             // Stamp recapture time NOW so we don't queue back-to-back captures
             // for the same window if the capture itself takes a while.
