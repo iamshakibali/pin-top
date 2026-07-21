@@ -13,6 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-monitor / Space awareness
 - Sparkle-based auto-update
 
+## [0.2.0] — 2026-07-21
+
+### Fixed
+- **Typing/interaction lag eliminated (#7).** The overlay now hides entirely when
+  the pinned window's app is frontmost (user actively editing). This removes
+  `CGWindowListCreateImage` ⟷ text-invalidation contention that caused
+  noticeable keystroke delay in Notes, TextEdit, and other live-edit apps.
+  The overlay reappears instantly when another app covers the source window,
+  with a fresh snapshot so content is never stale.
+- Overlay no longer blocks mouse or keyboard input to the real window while
+  the user is actively interacting with it.
+
+### Added
+- App icon — PinTop.icns wired into the `.app` bundle via `run.sh` and
+  `release.sh`. Visible in Finder, Get Info, and the app switcher.
+- Icon displayed in README header.
+
 ## [0.1.1] — 2026-07-21
 
 Maintenance update over the first beta.
