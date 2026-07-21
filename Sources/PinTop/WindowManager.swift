@@ -177,7 +177,8 @@ func exitSelectionMode() {
         let overlay = PinOverlayWindow(
             frame: appKitFrame(for: window.bounds),
             snapshot: snapshot,
-            windowID: window.id
+            windowID: window.id,
+            pid: window.pid
         )
         overlay.orderFront(nil)
         overlays[window.id] = overlay
@@ -254,6 +255,15 @@ func exitSelectionMode() {
         guard !pinnedWindows.isEmpty else { return }
         let now = Date().timeIntervalSinceReferenceDate
 
+        // O(1) burial proxy: if the source window's owner app isn't the
+        // frontmost app, some other app's window is covering it → absorb the
+        // next click so we can re-front the source instead of letting the
+        // click fall through to the covering app (the reported bug). We avoid
+        // enumerating all onscreen windows every tick — the original loop went
+        // out of its way to use a cheap per-window lookup for exactly this
+        // reason; a full scan at 60Hz made the click→front path feel delayed.
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+
         // Iterate over a copy: removing from a Set while iterating it can crash.
         for window in Array(pinnedWindows) {
             guard let overlay = overlays[window.id] else {
@@ -273,6 +283,15 @@ func exitSelectionMode() {
                 clearTrackingState(for: window.id)
                 continue
             }
+
+            // Burial = source app not frontmost. O(1). Misses the rare case where the
+            // source app IS frontmost but a sibling window of that app covers
+            // the pinned one; that's the same passthrough behavior as before
+            // this whole fix, so no regression.
+            // ponytail: frontmost-app proxy; upgrade to a bounds-intersection
+            // front-to-back scan (enumerateWindows) if sibling-window coverage
+            // in a multi-window app starts biting.
+            overlay.setAbsorbsClicks(frontmostPID != currentWindow.pid)
 
             let prevBounds = lastAppliedBounds[window.id]
         let boundsChanged = prevBounds != currentWindow.bounds
