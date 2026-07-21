@@ -15,7 +15,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "PinTop",
-            path: "Sources/PinTop"
+            path: "Sources/PinTop",
+            resources: [.copy("Resources/PinTop.icns")]
         ),
     ]
 )

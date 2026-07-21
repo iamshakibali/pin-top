@@ -26,6 +26,7 @@ swift build -c release
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp .build/release/PinTop "$APP/Contents/MacOS/PinTop"
+cp Sources/PinTop/Resources/PinTop.icns "$APP/Contents/Resources/PinTop.icns"
 
 # Strip local symbols for a smaller, cleaner distributable.
 strip -x "$APP/Contents/MacOS/PinTop" || true
