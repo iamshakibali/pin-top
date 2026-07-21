@@ -67,6 +67,12 @@ class WindowManager: ObservableObject {
     // delay so the overlay shows correct (un-stretched) content post-resize.
     private var lastBoundsChangeTime: [CGWindowID: TimeInterval] = [:]
     private let settleRecaptureDelay: TimeInterval = 0.1
+    // ponytail: track which overlays are hidden because their source app is
+    // frontmost. Avoids calling orderOut/orderFront every tick — only on
+    // actual visibility transitions. Hidden overlays don't block input and
+    // don't need recapture (the real window covers them entirely).
+    private var hiddenOverlays: Set<CGWindowID> = []
+
     // Set once we've prompted the user about Screen Recording permission this
     // session, so we don't keep badgering them every time they click the menu.
     private var hasPromptedScreenCaptureThisSession = false
@@ -207,6 +213,7 @@ func exitSelectionMode() {
         lastRecaptureTime.removeAll()
         lastResizeRecaptureTime.removeAll()
         lastBoundsChangeTime.removeAll()
+        hiddenOverlays.removeAll()
         for overlay in snapshot {
             overlay.orderOut(nil)
         }
@@ -217,6 +224,7 @@ func exitSelectionMode() {
         lastRecaptureTime.removeValue(forKey: windowID)
         lastResizeRecaptureTime.removeValue(forKey: windowID)
         lastBoundsChangeTime.removeValue(forKey: windowID)
+        hiddenOverlays.remove(windowID)
     }
 
     // MARK: - Accessibility
@@ -284,6 +292,27 @@ func exitSelectionMode() {
                 continue
             }
 
+            // ponytail: hide the overlay when the source app is frontmost.
+            // The real window covers the overlay entirely — keeping it visible
+            // at .statusBar+1 blocks mouse/keyboard input to the real window
+            // (the typing-lag regression). Hiding also eliminates recapture
+            // cost since there's nothing to preview. The overlay reappears
+            // the moment another app covers the source.
+            let sourceIsFrontmost = frontmostPID == currentWindow.pid
+            if sourceIsFrontmost {
+                if !hiddenOverlays.contains(window.id) {
+                    overlay.orderOut(nil)
+                    hiddenOverlays.insert(window.id)
+                }
+                continue
+            } else if hiddenOverlays.contains(window.id) {
+                // Source just became buried — show the overlay, take a fresh
+                // snapshot so it isn't stale from before we hid it.
+                overlay.orderFront(nil)
+                hiddenOverlays.remove(window.id)
+                lastRecaptureTime[window.id] = 0 // force immediate recapture
+            }
+
             // Burial = source app not frontmost. O(1). Misses the rare case where the
             // source app IS frontmost but a sibling window of that app covers
             // the pinned one; that's the same passthrough behavior as before
@@ -291,7 +320,7 @@ func exitSelectionMode() {
             // ponytail: frontmost-app proxy; upgrade to a bounds-intersection
             // front-to-back scan (enumerateWindows) if sibling-window coverage
             // in a multi-window app starts biting.
-            overlay.setAbsorbsClicks(frontmostPID != currentWindow.pid)
+            overlay.setAbsorbsClicks(true)
 
             let prevBounds = lastAppliedBounds[window.id]
         let boundsChanged = prevBounds != currentWindow.bounds
