@@ -17,6 +17,7 @@ fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp .build/out/Products/Debug/PinTop "$APP/Contents/MacOS/PinTop"
+cp Sources/PinTop/Resources/PinTop.icns "$APP/Contents/Resources/PinTop.icns"
 
 # Prefer a real Apple Development cert; fall back to a self-signed
 # "Pin Top Local Signing" identity if present (stable across rebuilds

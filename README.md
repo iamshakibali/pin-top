@@ -1,5 +1,9 @@
 # Pin Top
 
+<p align="center">
+  <img src="PinTop.png" alt="PinTop" width="128" height="128" />
+</p>
+
 > Pin any window to stay truly always-on-top on macOS.
 
 <b>Pin Top</b> is a lightweight menu-bar app that keeps a chosen window floating above every other app on your screen. Unlike workarounds that periodically "raise" a window (which visibly bumps every few seconds and still gets covered between raises), Pin Top places a live overlay copy of the window at the maximum window level — so nothing can ever cover it.
