@@ -165,23 +165,14 @@ func exitSelectionMode() {
     func pin(_ window: WindowInfo) {
         guard !pinnedWindows.contains(window) else { return }
 
-        NSLog("[PinTop] pin(): attempting capture for window id=%d name=%@ owner=%@",
-              window.id, window.name, window.ownerName)
-        NSLog("[PinTop] pin(): CGPreflightScreenCaptureAccess() = \(CGPreflightScreenCaptureAccess())")
-
         // Capture initial snapshot. A nil result reliably means Screen
         // Recording permission is missing on macOS 10.15+ — surface the
         // prompt, but only once per session so the user isn't badgered.
         guard let snapshot = captureSnapshot(of: window) else {
-            NSLog("[PinTop] pin(): capture returned nil — permission check: prompted=\(hasPromptedScreenCaptureThisSession)")
             if !hasPromptedScreenCaptureThisSession {
                 hasPromptedScreenCaptureThisSession = true
-                NSLog("[PinTop] pin(): calling requestScreenCapturePermission")
                 requestScreenCapturePermission()
-                NSLog("[PinTop] pin(): calling showScreenCapturePermissionAlert")
                 showScreenCapturePermissionAlert()
-            } else {
-                NSLog("[PinTop] pin(): already prompted this session — skipping")
             }
             return
         }
@@ -423,11 +414,9 @@ func exitSelectionMode() {
         alert.informativeText = "Allow Pin Top in System Settings > Privacy & Security > Screen Recording\(alreadyListed), then quit and reopen Pin Top."
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Later")
-        DispatchQueue.main.async {
-            let response = alert.runModal()
-            if response == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-            }
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
         }
     }
 }

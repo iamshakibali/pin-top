@@ -20,7 +20,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var selectionOverlayWindows: [SelectionOverlayWindow] = []
     private var aboutWindow: AboutWindow?
     private var cancellables = Set<AnyCancellable>()
-    private var eventMonitor: Any?
 
     override init() {
         super.init()
@@ -65,31 +64,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.title = "Pin"
         }
 
-        // NSEvent monitor: target/action on NSStatusBarButton under SwiftUI
-        // never fires — SwiftUI wraps the AppKit status item and swallows
-        // the action. Catching at the raw event level is the reliable path.
-        // Return the event (not nil) so AppKit can apply the native highlight.
-        let b = button
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
-            if event.window == b.window {
-                NSLog("[PinTop] click detected")
-                // Defer the menu call to the next runloop tick so AppKit can
-                // highlight the button first.
-                DispatchQueue.main.async {
-                    self.statusButtonClicked(b)
-                }
-                return event  // Let AppKit apply the highlight
-            }
-            return event
-        }
-        NSLog("[PinTop] eventMonitor installed: %@", eventMonitor != nil ? "yes" : "no")
+        // Standard AppKit pattern: attach the menu directly to the status item.
+        // target/action on NSStatusBarButton under SwiftUI can be unreliable;
+        // the menu-pop pattern is the stable path.
+        item.menu = statusMenu
 
         statusItem = item
         windowManager = WindowManager.shared
         configure(with: WindowManager.shared)
-        NSLog("[PinTop] setupStatusBar: complete, statusItem=%@", statusItem != nil ? "set" : "nil")
     }
 
+    // Not used when the menu is attached directly to the status item.
+    // Kept in case we ever need programmatic menu popup.
     @objc private func statusButtonClicked(_ sender: NSStatusBarButton) {
         guard let menu = statusMenu else { return }
         menu.popUp(
@@ -127,7 +113,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        // target nil: terminate(_:) must walk the responder chain to NSApp.
+        // target must stay nil — terminate(_:) walks the responder chain to
+        // NSApplication. Setting it to appDelegate shadows that and the quit
+        // item becomes a no-op.
         let quitItem = NSMenuItem(title: "Quit Pin Top", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
 
@@ -151,6 +139,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func clearAllMenuItem() {
         windowManager?.unpinAll()
+        // orderOut (not close) keeps the NSWindow alive but hidden,
+        // avoiding the auto-termination "last window closed" hook.
         DispatchQueue.main.async { [weak self] in self?.updateMenu() }
     }
 
@@ -164,23 +154,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         AppUpdater.shared.checkForUpdates { state in
             switch state {
             case .upToDate:
-                let a = NSAlert()
-                a.messageText = "You're up to date!"
-                a.informativeText = "Pin Top is already running the latest version."
-                a.addButton(withTitle: "OK")
-                a.runModal()
+                let alert = NSAlert()
+                alert.messageText = "You're up to date!"
+                alert.informativeText = "Pin Top is already running the latest version."
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
             case .available(let version):
-                let a = NSAlert()
-                a.messageText = "Update Available"
-                a.informativeText = "Pin Top \(version) is being downloaded and installed."
-                a.addButton(withTitle: "OK")
-                a.runModal()
+                let alert = NSAlert()
+                alert.messageText = "Update Available"
+                alert.informativeText = "Pin Top \(version) is being downloaded and installed."
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
             case .error(let msg):
-                let a = NSAlert()
-                a.messageText = "Update Check Failed"
-                a.informativeText = msg
-                a.addButton(withTitle: "OK")
-                a.runModal()
+                let alert = NSAlert()
+                alert.messageText = "Update Check Failed"
+                alert.informativeText = msg
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
             default:
                 break
             }
@@ -202,6 +192,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let unpinMenu = NSMenu()
             let unpinAction = NSMenuItem(title: "Unpin", action: #selector(unpinMenuItem(_:)), keyEquivalent: "")
             unpinAction.target = self
+            // Store the CGWindowID (NSNumber) rather than the WindowInfo
+            // struct. Boxing a Swift struct into representedObject produces
+            // a _SwiftValue that AppKit may release out from under its own
+            // dispatch when the menu is rebuilt inside the action handler —
+            // that caused the SIGSEGV at _CFAutoreleasePoolPop. Look up the
+            // full WindowInfo from windowManager at unpin time instead.
             unpinAction.representedObject = NSNumber(value: window.id)
             unpinMenu.addItem(unpinAction)
             item.submenu = unpinMenu
