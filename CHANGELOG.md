@@ -10,6 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Per-window live refresh
 - Multi-monitor / Space awareness
+- Migrate from deprecated `CGWindowListCreateImage` to ScreenCaptureKit for forward compatibility with future macOS releases
+
+## [0.3.1] — 2026-08-12
+
+### Fixed
+- **Screen Recording permission now survives rebuilds.** The app now ships with
+  `setup-signing.sh` to create a persistent self-signed code-signing identity.
+  Previously, every `run.sh` rebuild used ad-hoc signing, which invalidated the
+  macOS TCC grant — PinTop would still appear checked in System Settings but
+  capture would silently fail. The new identity is stable across rebuilds so
+  the grant persists.
+- **Permission alert explains the real cause.** When capture fails, the alert
+  now detects whether PinTop is already listed in Screen Recording settings and
+  tells the user to *remove and re-add* it if the grant is stale after a
+  signature change.
+- **Added debug logging** to the capture path (`NSLog` in `pin()`) so future
+  permission issues are diagnosable from Console.app.
+
+### macOS Tahoe (26) Compatibility
+- App continues to build and run on macOS 15 (Sequoia) and is forward-compatible
+  with macOS 26 (Tahoe). The deprecation warning for `CGWindowListCreateImage`
+  is documented; the API remains functional on Tahoe Beta 1. A ScreenCaptureKit
+  migration is planned for a future release.
 
 ## [0.3.0] — 2026-07-22
 
