@@ -5,88 +5,34 @@ import Combine
 @main
 struct PinTopApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    let windowManager = WindowManager.shared
-
-    init() {
-        setupMenuBar()
-    }
 
     var body: some Scene {
         Settings {
             EmptyView()
         }
     }
-
-    private func setupMenuBar() {
-        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Pin Top")
-        statusItem.button?.image?.isTemplate = true
-        statusItem.menu = createMenuBar()
-        appDelegate.statusItem = statusItem
-        appDelegate.windowManager = windowManager
-        appDelegate.configure(with: windowManager)
-    }
-
-    private func createMenuBar() -> NSMenu {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-
-        let selectItem = NSMenuItem(title: "Enable Pin", action: #selector(AppDelegate.selectMenuItem), keyEquivalent: "")
-        selectItem.target = appDelegate
-        menu.addItem(selectItem)
-        selectItem.tag = -1
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Pinned-window items are inserted by updateMenu()
-        menu.addItem(NSMenuItem.separator())
-
-        let clearItem = NSMenuItem(title: "Clear All", action: #selector(AppDelegate.clearAllMenuItem), keyEquivalent: "")
-        clearItem.target = appDelegate
-        menu.addItem(clearItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let aboutItem = NSMenuItem(title: "About Pin Top", action: #selector(AppDelegate.aboutMenuItem), keyEquivalent: "")
-        aboutItem.target = appDelegate
-        menu.addItem(aboutItem)
-
-        let updatesItem = NSMenuItem(title: "Check for Updates", action: #selector(AppDelegate.checkUpdatesMenuItem), keyEquivalent: "")
-        updatesItem.target = appDelegate
-        menu.addItem(updatesItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let quitItem = NSMenuItem(title: "Quit Pin Top", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
-        // target must stay nil — terminate(_:) walks the responder chain to
-        // NSApplication. Setting it to appDelegate shadows that and the quit
-        // item becomes a no-op.
-        menu.addItem(quitItem)
-
-        return menu
-    }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var windowManager: WindowManager?
+    private var statusMenu: NSMenu!
     private var selectionOverlayWindows: [SelectionOverlayWindow] = []
     private var aboutWindow: AboutWindow?
+    private var cancellables = Set<AnyCancellable>()
+    private var eventMonitor: Any?
 
     override init() {
         super.init()
-        // LSUIElement menu-bar apps have no Dock icon, so AppKit treats them
-        // as auto-terminatable when their last window closes. Without this,
-        // "Clear All" closing the only overlay tears the whole app down and
-        // the menu-bar pin icon vanishes. Disabling prevents that.
         ProcessInfo.processInfo.disableAutomaticTermination("Pin Top runs in the menu bar")
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Belt-and-suspenders: SwiftUI may reset state after init.
         ProcessInfo.processInfo.disableAutomaticTermination("Pin Top runs in the menu bar")
-        // Menu-bar only app — SwiftUI's Settings scene auto-opens on launch.
-        // Close any non-overlay window immediately.
+
+        setupStatusBar()
+
+        // Close SwiftUI's auto-opened Settings window.
         DispatchQueue.main.async {
             for window in NSApp.windows {
                 if !(window is PinOverlayWindow) && !(window is AboutWindow) {
@@ -96,32 +42,108 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // Never quit just because the last NSWindow went away — the menu bar icon
-    // is the UI, not the windows.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 
-    func configure(with windowManager: WindowManager) {
-        self.windowManager = windowManager
+    private func setupStatusBar() {
+        guard statusItem == nil else { return }
+        NSLog("[PinTop] setupStatusBar: starting")
 
-        // Listen for pinned window changes to refresh the menu
-        windowManager.$pinnedWindows
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.updateMenu()
+        statusMenu = buildMenu()
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        guard let button = item.button else {
+            NSLog("[PinTop] ERROR: no status item button")
+            return
+        }
+
+        if let image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Pin Top") {
+            image.isTemplate = true
+            button.image = image
+        } else {
+            button.title = "Pin"
+        }
+
+        // NSEvent monitor: target/action on NSStatusBarButton under SwiftUI
+        // never fires — SwiftUI wraps the AppKit status item and swallows
+        // the action. Catching at the raw event level is the reliable path.
+        // Return the event (not nil) so AppKit can apply the native highlight.
+        let b = button
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
+            if event.window == b.window {
+                NSLog("[PinTop] click detected")
+                // Defer the menu call to the next runloop tick so AppKit can
+                // highlight the button first.
+                DispatchQueue.main.async {
+                    self.statusButtonClicked(b)
+                }
+                return event  // Let AppKit apply the highlight
             }
-            .store(in: &cancellables)
+            return event
+        }
+        NSLog("[PinTop] eventMonitor installed: %@", eventMonitor != nil ? "yes" : "no")
 
+        statusItem = item
+        windowManager = WindowManager.shared
+        configure(with: WindowManager.shared)
+        NSLog("[PinTop] setupStatusBar: complete, statusItem=%@", statusItem != nil ? "set" : "nil")
     }
 
-    private var cancellables = Set<AnyCancellable>()
+    @objc private func statusButtonClicked(_ sender: NSStatusBarButton) {
+        guard let menu = statusMenu else { return }
+        menu.popUp(
+            positioning: menu.item(at: 0),
+            at: NSPoint(x: 0, y: sender.bounds.height + 4),
+            in: sender
+        )
+    }
+
+    private func buildMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let selectItem = NSMenuItem(title: "Enable Pin", action: #selector(selectMenuItem), keyEquivalent: "")
+        selectItem.target = self
+        selectItem.tag = -1
+        menu.addItem(selectItem)
+
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem.separator()) // placeholder for pinned-window items
+
+        let clearItem = NSMenuItem(title: "Clear All", action: #selector(clearAllMenuItem), keyEquivalent: "")
+        clearItem.target = self
+        menu.addItem(clearItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let aboutItem = NSMenuItem(title: "About Pin Top", action: #selector(aboutMenuItem), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+
+        let updatesItem = NSMenuItem(title: "Check for Updates", action: #selector(checkUpdatesMenuItem), keyEquivalent: "")
+        updatesItem.target = self
+        menu.addItem(updatesItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // target nil: terminate(_:) must walk the responder chain to NSApp.
+        let quitItem = NSMenuItem(title: "Quit Pin Top", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(quitItem)
+
+        return menu
+    }
+
+    private func configure(with windowManager: WindowManager) {
+        self.windowManager = windowManager
+        windowManager.$pinnedWindows
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateMenu() }
+            .store(in: &cancellables)
+    }
 
     @objc func selectMenuItem() {
         guard let windowManager else { return }
-        // LSUIElement apps aren't the active app when their menu is clicked.
-        // Activate before showing any UI so modal alerts and the picker
-        // actually appear in front of the foreground app's windows.
         NSApp.activate(ignoringOtherApps: true)
         guard windowManager.enterSelectionMode() else { return }
         showSelectionOverlay()
@@ -129,41 +151,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func clearAllMenuItem() {
         windowManager?.unpinAll()
-        DispatchQueue.main.async { [weak self] in
-            self?.updateMenu()
-        }
+        DispatchQueue.main.async { [weak self] in self?.updateMenu() }
     }
 
     @objc func aboutMenuItem() {
-        if aboutWindow == nil {
-            aboutWindow = AboutWindow()
-        }
+        if aboutWindow == nil { aboutWindow = AboutWindow() }
         aboutWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc func checkUpdatesMenuItem() {
         AppUpdater.shared.checkForUpdates { state in
-            // Show a simple alert for menu-triggered updates
             switch state {
             case .upToDate:
-                let alert = NSAlert()
-                alert.messageText = "You're up to date!"
-                alert.informativeText = "Pin Top is already running the latest version."
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
+                let a = NSAlert()
+                a.messageText = "You're up to date!"
+                a.informativeText = "Pin Top is already running the latest version."
+                a.addButton(withTitle: "OK")
+                a.runModal()
             case .available(let version):
-                let alert = NSAlert()
-                alert.messageText = "Update Available"
-                alert.informativeText = "Pin Top \(version) is being downloaded and installed."
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
+                let a = NSAlert()
+                a.messageText = "Update Available"
+                a.informativeText = "Pin Top \(version) is being downloaded and installed."
+                a.addButton(withTitle: "OK")
+                a.runModal()
             case .error(let msg):
-                let alert = NSAlert()
-                alert.messageText = "Update Check Failed"
-                alert.informativeText = msg
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
+                let a = NSAlert()
+                a.messageText = "Update Check Failed"
+                a.informativeText = msg
+                a.addButton(withTitle: "OK")
+                a.runModal()
             default:
                 break
             }
@@ -171,86 +188,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateMenu() {
-        guard let menu = statusItem?.menu, let wm = windowManager else { return }
+        guard let menu = statusMenu, let wm = windowManager else { return }
 
-        // Remove all pinned-window items. "Enable Pin"/"Pin Another" is tag -1,
-        // so pinned items start at tag -2; the condition must include -2 or
-        // the first pinned entry is never reaped, duplicating on every refresh.
-        let count = menu.items.count
-        for i in (0..<count).reversed() {
-            let tag = menu.item(at: i)?.tag ?? 0
-            if tag <= -2 {
-                menu.removeItem(at: i)
-            }
+        for i in (0..<menu.items.count).reversed() {
+            if (menu.item(at: i)?.tag ?? 0) <= -2 { menu.removeItem(at: i) }
         }
 
         let sorted = wm.pinnedWindows.sorted { $0.name < $1.name }
         for (index, window) in sorted.enumerated() {
-            let title = "\(window.ownerName): \(window.name)"
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let item = NSMenuItem(title: "\(window.ownerName): \(window.name)", action: nil, keyEquivalent: "")
             item.tag = -2 - index
 
             let unpinMenu = NSMenu()
-            let unpinAction = NSMenuItem(title: "Unpin", action: #selector(AppDelegate.unpinMenuItem(_:)), keyEquivalent: "")
+            let unpinAction = NSMenuItem(title: "Unpin", action: #selector(unpinMenuItem(_:)), keyEquivalent: "")
             unpinAction.target = self
-            // Store the CGWindowID (NSNumber) rather than the WindowInfo
-            // struct. Boxing a Swift struct into representedObject produces
-            // a _SwiftValue that AppKit may release out from under its own
-            // dispatch when the menu is rebuilt inside the action handler —
-            // that caused the SIGSEGV at _CFAutoreleasePoolPop. Look up the
-            // full WindowInfo from windowManager at unpin time instead.
             unpinAction.representedObject = NSNumber(value: window.id)
             unpinMenu.addItem(unpinAction)
-
             item.submenu = unpinMenu
             menu.insertItem(item, at: 2 + index)
         }
 
-        // Update "Enable Pin" → "Pin Another" label
-        if let firstItem = menu.item(at: 0) {
-            firstItem.title = wm.pinnedWindows.count > 0 ? "Pin Another" : "Enable Pin"
+        if let first = menu.item(at: 0) {
+            first.title = wm.pinnedWindows.isEmpty ? "Enable Pin" : "Pin Another"
         }
     }
 
     @objc func unpinMenuItem(_ sender: NSMenuItem) {
         guard let id = (sender.representedObject as? NSNumber)?.uint32Value,
               let wm = windowManager else { return }
-        // Find the matching pinned WindowInfo by CGWindowID. We stash only
-        // the ID in representedObject instead of the WindowInfo struct to
-        // avoid boxing a Swift struct (see updateMenu() for why).
         let windowID = CGWindowID(id)
         guard let window = wm.pinnedWindows.first(where: { $0.id == windowID }) else { return }
         wm.unpin(window)
-        DispatchQueue.main.async { [weak self] in
-            self?.updateMenu()
-        }
+        DispatchQueue.main.async { [weak self] in self?.updateMenu() }
     }
 
     private func showSelectionOverlay() {
         hideSelectionOverlay()
         guard let wm = windowManager else { return }
-
         for screen in NSScreen.screens {
-            let overlayWindow = SelectionOverlayWindow(screen: screen) { [weak self, weak wm] point in
-                // Hide every selection window before capture. This avoids
-                // capturing the picker and ensures each overlay is dismissed once.
+            let overlay = SelectionOverlayWindow(screen: screen) { [weak self, weak wm] point in
                 self?.hideSelectionOverlay()
-
                 guard let wm else { return }
-                if let point, let window = wm.selectWindow(at: point) {
-                    wm.pin(window)
-                }
+                if let point, let window = wm.selectWindow(at: point) { wm.pin(window) }
                 wm.exitSelectionMode()
             }
-            overlayWindow.makeKeyAndOrderFront(nil)
-            selectionOverlayWindows.append(overlayWindow)
+            overlay.makeKeyAndOrderFront(nil)
+            selectionOverlayWindows.append(overlay)
         }
     }
 
     private func hideSelectionOverlay() {
-        // Ordering out is safe while a mouse event is still being handled.
-        // Removing the last strong references lets ARC clean up after the
-        // event returns, rather than closing the clicked window twice.
         let overlays = selectionOverlayWindows
         selectionOverlayWindows.removeAll()
         overlays.forEach { $0.orderOut(nil) }

@@ -16,7 +16,7 @@ fi
 # rewrite the Mach-O and Info.plist in place, then re-sign in place.
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
-cp .build/out/Products/Debug/PinTop "$APP/Contents/MacOS/PinTop"
+cp .build/debug/PinTop "$APP/Contents/MacOS/PinTop"
 cp Sources/PinTop/Resources/PinTop.icns "$APP/Contents/Resources/PinTop.icns"
 
 # Prefer a real Apple Development cert; fall back to a self-signed
