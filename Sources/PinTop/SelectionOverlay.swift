@@ -18,7 +18,11 @@ class SelectionOverlayWindow: NSWindow {
         )
         self.isOpaque = false
         self.backgroundColor = NSColor.clear
-        self.level = .statusBar + 1
+        // One above pin overlays (statusBar + 1). Pin overlays absorb clicks
+        // while their source window is buried, and the refresh loop keeps
+        // re-fronting them — at the same level they could sit over the
+        // picker and swallow its clicks, reading as "picker dead" (#5).
+        self.level = .statusBar + 2
         self.ignoresMouseEvents = false
         self.acceptsMouseMovedEvents = true
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]

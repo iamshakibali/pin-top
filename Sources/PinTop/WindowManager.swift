@@ -4,12 +4,25 @@ import Combine
 
 // MARK: - WindowInfo
 
+/// Identity of a window is its CGWindowID. Name and bounds are mutable
+/// attributes (windows move, resize, retitle — a pinned window can drift by
+/// a single pixel between pins), so equality/hashing must key on `id` only.
+/// Field-wise equality made `pinnedWindows.contains` miss a re-selected
+/// window and pin it twice, stranding the first overlay on screen (#5).
 struct WindowInfo: Identifiable, Equatable, Hashable {
     let id: CGWindowID
     let name: String
     let ownerName: String
     let pid: pid_t
     let bounds: CGRect
+
+    static func == (lhs: WindowInfo, rhs: WindowInfo) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 
     static func fromDictionary(_ dict: [String: Any]) -> WindowInfo? {
         guard
@@ -179,6 +192,12 @@ func exitSelectionMode() {
 
         pinnedWindows.insert(window)
 
+        // If an overlay for this id somehow survives (e.g. state left by an
+        // older build), retire it before installing the new one — replacing
+        // the dict entry alone would strand the old window on screen, where
+        // it keeps absorbing clicks until the app restarts.
+        overlays[window.id]?.orderOut(nil)
+
         // Create overlay window
         let overlay = PinOverlayWindow(
             frame: appKitFrame(for: window.bounds),
@@ -198,6 +217,12 @@ func exitSelectionMode() {
         pinnedWindows.remove(window)
         clearTrackingState(for: window.id)
         overlay?.orderOut(nil)
+        // Also retire any untracked overlay for the same window — an orphan
+        // stranded by a double-pin in an older build would otherwise keep
+        // swallowing clicks in its frame after this unpin (#5).
+        for case let stray as PinOverlayWindow in NSApp.windows where stray.windowID == window.id {
+            stray.orderOut(nil)
+        }
     }
 
     func unpinAll() {
@@ -215,6 +240,13 @@ func exitSelectionMode() {
         lastBoundsChangeTime.removeAll()
         hiddenOverlays.removeAll()
         for overlay in snapshot {
+            overlay.orderOut(nil)
+        }
+        // Sweep any overlay windows no longer tracked in `overlays` — e.g.
+        // orphans stranded by double-pinning in older builds. They sit at
+        // pin level and swallow every click in their frame, which read as
+        // "picker dead until restart" (#5). orderOut (not close) on purpose.
+        for case let overlay as PinOverlayWindow in NSApp.windows {
             overlay.orderOut(nil)
         }
     }
