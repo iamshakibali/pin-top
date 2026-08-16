@@ -183,11 +183,16 @@ func exitSelectionMode() {
             return nil
         }
 
+        // Use the EXACT backing scale of the display hosting the window.
+        // Deriving it as pixels/points of the (often fractional) window rect
+        // leaves the NSImage with a fractional dpi — every later draw then
+        // resamples the whole bitmap by a fraction of a percent, which
+        // softens all text. A whole-number dpi lets the view draw 1:1.
+        let displayScale = Self.backingScale(for: windowInfo.bounds)
         // Crop the outer 1pt from every side. The capture includes the
         // source window's edge stroke — a light-gray hairline on INACTIVE
         // windows — which reads as an artifact on the floating pin.
-        let scale = CGFloat(fullImage.width) / windowInfo.bounds.width
-        let inset = (scale * 1).rounded()
+        let inset = displayScale // one point's worth of device pixels
         let cropRect = CGRect(
             x: inset, y: inset,
             width: CGFloat(fullImage.width) - inset * 2,
@@ -197,8 +202,22 @@ func exitSelectionMode() {
 
         return NSImage(
             cgImage: cgImage,
-            size: CGSize(width: cropRect.width / scale, height: cropRect.height / scale)
+            size: CGSize(width: cropRect.width / displayScale, height: cropRect.height / displayScale)
         )
+    }
+
+    // Whole-number backing scale (1 or 2) of the display containing the
+    // rect's center; Retina is the sensible fallback if no display matches.
+    private static func backingScale(for rect: CGRect) -> CGFloat {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 8)
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(8, &ids, &count)
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        for id in ids.prefix(Int(count)) where CGDisplayBounds(id).contains(center) {
+            guard let mode = CGDisplayCopyDisplayMode(id) else { continue }
+            return (CGFloat(mode.pixelWidth) / CGDisplayBounds(id).width).rounded()
+        }
+        return 2
     }
 
     // MARK: - Pin / Unpin
