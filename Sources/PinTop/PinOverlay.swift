@@ -34,11 +34,11 @@ class PinOverlayWindow: NSWindow {
         self.acceptsMouseMovedEvents = false
 
         // Configure image view. The view is sized to the bitmap's own point
-        // size (not stretched to the window frame) so every draw is 1:1 —
-        // see updateSnapshot. The bitmap is pre-cropped by 1pt per side at
-        // capture time (window edge stroke), hence the 1pt inset origin.
+        // size (never stretched to the window frame) so every draw is 1:1 —
+        // see updateSnapshot. The bitmap is full-bleed (includes the window's
+        // native 1px edge stroke) and fills the window edge to edge.
         imageView.image = snapshot
-        imageView.frame = NSRect(origin: NSPoint(x: 1, y: 1), size: snapshot.size)
+        imageView.frame = NSRect(origin: .zero, size: snapshot.size)
         imageView.imageScaling = .scaleNone
         imageView.autoresizingMask = []
         imageView.wantsLayer = true

@@ -199,16 +199,7 @@ func exitSelectionMode() {
         // resamples the whole bitmap by a fraction of a percent, which
         // softens all text. A whole-number dpi lets the view draw 1:1.
         let displayScale = Self.backingScale(for: windowInfo.bounds)
-        // Crop the outer 1pt from every side. The capture includes the
-        // source window's edge stroke — a light-gray hairline on INACTIVE
-        // windows — which reads as an artifact on the floating pin.
-        let inset = displayScale // one point's worth of device pixels
-        let cropRect = CGRect(
-            x: inset, y: inset,
-            width: CGFloat(fullImage.width) - inset * 2,
-            height: CGFloat(fullImage.height) - inset * 2
-        ).integral
-        var cgImage = fullImage.cropping(to: cropRect) ?? fullImage
+        var cgImage = fullImage
 
         // The pin usually mirrors the window in its INACTIVE state (it's
         // buried precisely because it lost focus) — macOS renders inactive
@@ -232,9 +223,13 @@ func exitSelectionMode() {
             }
         }
 
+        // No edge crop: the capture's 1px window stroke stays in the bitmap
+        // and the bitmap fills the overlay edge to edge. Cropping it created
+        // a 1pt transparent rim through which the real window's stroke (or
+        // the covering app) peeked — the actual "wrong edge" artifact.
         return NSImage(
             cgImage: cgImage,
-            size: CGSize(width: cropRect.width / displayScale, height: cropRect.height / displayScale)
+            size: CGSize(width: CGFloat(cgImage.width) / displayScale, height: CGFloat(cgImage.height) / displayScale)
         )
     }
 
