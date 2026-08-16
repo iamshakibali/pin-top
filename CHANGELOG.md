@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is documented; the API remains functional on Tahoe Beta 1. A ScreenCaptureKit
   migration is planned for a future release.
 
+## [0.3.2] — 2026-08-16
+
+### Fixed
+- **Menu bar icon unresponsive on click.** The launch cleanup that closes the
+  auto-opened SwiftUI Settings window was also closing the status item's own
+  `NSStatusBarWindow`. ControlCenter kept rendering the icon, but clicks had no
+  target — the app looked frozen. The cleanup now skips status bar windows.
+
 ## [0.3.0] — 2026-07-22
 
 ### Added
