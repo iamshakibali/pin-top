@@ -5,7 +5,7 @@ import CoreGraphics
 
 class PinOverlayWindow: NSWindow {
     private let imageView = NSImageView()
-    private var windowID: CGWindowID
+    let windowID: CGWindowID
     private let pid: pid_t
 
     init(frame: CGRect, snapshot: NSImage, windowID: CGWindowID, pid: pid_t) {
