@@ -38,19 +38,6 @@ struct WindowInfo: Identifiable, Equatable, Hashable {
     }
 }
 
-// Diagnostic file log — NSLog from this app doesn't reliably reach the
-// unified log store. Temporary; strip before merging.
-func visLog(_ message: String) {
-    let path = "/tmp/pintop-vis.log"
-    if !FileManager.default.fileExists(atPath: path) {
-        FileManager.default.createFile(atPath: path, contents: nil)
-    }
-    guard let handle = FileHandle(forWritingAtPath: path) else { return }
-    handle.seekToEndOfFile()
-    handle.write("\(Date()) \(message)\n".data(using: .utf8)!)
-    try? handle.close()
-}
-
 // MARK: - WindowManager
 
 class WindowManager: ObservableObject {
@@ -211,18 +198,6 @@ func exitSelectionMode() {
             cgImage = lifted
         }
 
-        // Diagnostic (temporary): dump the first capture after launch so the
-        // bitmap quality can be compared against the on-screen result —
-        // separates "capture is already soft" from "rendering softens it".
-        if Self.dumpNextCapture {
-            Self.dumpNextCapture = false
-            let rep = NSBitmapImageRep(cgImage: fullImage)
-            if let data = rep.representation(using: .png, properties: [:]) {
-                try? data.write(to: URL(fileURLWithPath: "/tmp/pintop-capture.png"))
-                visLog("dumped raw capture \(fullImage.width)x\(fullImage.height) px to /tmp/pintop-capture.png")
-            }
-        }
-
         // No edge crop: the capture's 1px window stroke stays in the bitmap
         // and the bitmap fills the overlay edge to edge. Cropping it created
         // a 1pt transparent rim through which the real window's stroke (or
@@ -235,7 +210,6 @@ func exitSelectionMode() {
 
     // Whole-number backing scale (1 or 2) of the display containing the
     // rect's center; Retina is the sensible fallback if no display matches.
-    private static var dumpNextCapture = true
     private static let ciContext = CIContext()
 
     // Mild CIColorControls lift approximating an ACTIVE window's appearance.
@@ -440,16 +414,12 @@ func exitSelectionMode() {
                     hide = streak >= 3 // ~0.6s sustained — ride out Space transitions
                     reason = "off-screen streak=\(streak)"
                 }
-                if lastOcclusionResult[window.id] != hide {
-                    visLog("scan wid=\(window.id) hide=\(hide) reason=\(reason) srcFrontmost=\(sourceIsFrontmost)")
-                }
                 lastOcclusionResult[window.id] = hide
                 lastOcclusionReason[window.id] = reason
             }
             let shouldHide = lastOcclusionResult[window.id] ?? false
             if shouldHide {
                 if !hiddenOverlays.contains(window.id) {
-                    visLog("HIDE wid=\(window.id) reason=\(lastOcclusionReason[window.id] ?? "?")")
                     overlay.orderOut(nil)
                     hiddenOverlays.insert(window.id)
                 }
@@ -457,7 +427,6 @@ func exitSelectionMode() {
             } else if hiddenOverlays.contains(window.id) {
                 // Source just became buried — show the overlay, take a fresh
                 // snapshot so it isn't stale from before we hid it.
-                visLog("SHOW wid=\(window.id)")
                 overlay.orderFront(nil)
                 hiddenOverlays.remove(window.id)
                 lastRecaptureTime[window.id] = 0 // force immediate recapture

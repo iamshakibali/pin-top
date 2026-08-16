@@ -79,7 +79,6 @@ class PinOverlayWindow: NSWindow {
     // directly beneath the overlay. Next tick drops us back to passthrough and
     // subsequent clicks reach the real window normally.
     override func mouseDown(with event: NSEvent) {
-        visLog("overlay mouseDown wid=\(windowID) — raising source pid=\(pid)")
         // Defer activation until after the current click event finishes
         // resolving. Activating synchronously inside mouseDown gets undone
         // by AppKit's post-event focus resolution — focus bounced back to
