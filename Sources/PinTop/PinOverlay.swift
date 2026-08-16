@@ -52,6 +52,15 @@ class PinOverlayWindow: NSWindow {
 
     func updateSnapshot(_ snapshot: NSImage) {
         imageView.image = snapshot
+        // Diagnostic: flag snapshots below the Retina expectation for the
+        // current frame — a 1x capture stretched onto a 2x display is the
+        // classic "pin looks blurry" cause.
+        let expectedW = Int(frame.width * 2)
+        let pxW = snapshot.representations.first?.pixelsWide ?? 0
+        let pxH = snapshot.representations.first?.pixelsHigh ?? 0
+        if pxW > 0 && pxW < expectedW - 2 {
+            visLog("LOW-RES snapshot wid=\(windowID) px=\(pxW)x\(pxH) frame=\(Int(frame.width))x\(Int(frame.height)) expected≈\(expectedW)")
+        }
     }
 
     // Called from the refresh loop: when the real pinned window is covered by
@@ -71,16 +80,25 @@ class PinOverlayWindow: NSWindow {
     // directly beneath the overlay. Next tick drops us back to passthrough and
     // subsequent clicks reach the real window normally.
     override func mouseDown(with event: NSEvent) {
-        bringSourceToFront()
+        visLog("overlay mouseDown wid=\(windowID) — raising source pid=\(pid)")
+        // Defer activation until after the current click event finishes
+        // resolving. Activating synchronously inside mouseDown gets undone
+        // by AppKit's post-event focus resolution — focus bounced back to
+        // the previously active app within a second, flapping the overlay.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.bringSourceToFront()
+        }
     }
 
     private func bringSourceToFront() {
         guard let app = NSRunningApplication(processIdentifier: pid) else { return }
-        // ponytail: the SDK dropped the synchronous activate(ignoringOtherApps:).
-        // activate(options:) is async, but we run it during the click on the main
-        // thread so it's effectively immediate; the bigger delay source was the
-        // 60Hz full-window enumeration in the refresh loop, now removed.
-        app.activate(options: [])
+        // activate alone makes the app key but does NOT raise a window that's
+        // buried under another app — the overlay then stays visible +
+        // absorbing and every further click just re-activates the
+        // already-active app, so the pinned window becomes un-clickable and
+        // un-draggable. activateAllWindows actually lifts the app's windows
+        // above whatever covers them.
+        app.activate(options: [.activateAllWindows])
     }
 
     override var canBecomeKey: Bool { false }

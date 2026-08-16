@@ -38,6 +38,19 @@ struct WindowInfo: Identifiable, Equatable, Hashable {
     }
 }
 
+// Diagnostic file log — NSLog from this app doesn't reliably reach the
+// unified log store. Temporary; strip before merging.
+func visLog(_ message: String) {
+    let path = "/tmp/pintop-vis.log"
+    if !FileManager.default.fileExists(atPath: path) {
+        FileManager.default.createFile(atPath: path, contents: nil)
+    }
+    guard let handle = FileHandle(forWritingAtPath: path) else { return }
+    handle.seekToEndOfFile()
+    handle.write("\(Date()) \(message)\n".data(using: .utf8)!)
+    try? handle.close()
+}
+
 // MARK: - WindowManager
 
 class WindowManager: ObservableObject {
@@ -57,12 +70,12 @@ class WindowManager: ObservableObject {
     // its bounds aren't changing.
     private var lastRecaptureTime: [CGWindowID: TimeInterval] = [:]
     private let idleRecaptureInterval: TimeInterval = 0.5
-    // During active resize we throttle the expensive snapshot recapture so
-    // the main thread doesn't saturate and the resize stays smooth. The
-    // overlay's frame still tracks every tick (cheap), so the box follows
-    // the source window 1:1 even though the bitmap refreshes less often.
+    // During active resize we throttle the snapshot recapture — captures run
+    // on the background captureQueue, so the rate can stay high (≈12×/sec);
+    // at the old 0.25s the stretched-between-captures bitmap accumulated
+    // visible aspect distortion (stretched text, squashed rows).
     private var lastResizeRecaptureTime: [CGWindowID: TimeInterval] = [:]
-    private let resizeRecaptureInterval: TimeInterval = 0.25
+    private let resizeRecaptureInterval: TimeInterval = 0.08
     // When bounds stop changing, force one final crisp recapture after this
     // delay so the overlay shows correct (un-stretched) content post-resize.
     private var lastBoundsChangeTime: [CGWindowID: TimeInterval] = [:]
@@ -72,6 +85,19 @@ class WindowManager: ObservableObject {
     // actual visibility transitions. Hidden overlays don't block input and
     // don't need recapture (the real window covers them entirely).
     private var hiddenOverlays: Set<CGWindowID> = []
+    // Occlusion scan state: throttled front-to-back check per pinned window
+    // that decides overlay visibility (see occlusionCheck).
+    private var lastOcclusionScanTime: [CGWindowID: TimeInterval] = [:]
+    private var lastOcclusionResult: [CGWindowID: Bool] = [:]
+    private var lastOcclusionReason: [CGWindowID: String] = [:]
+    private let occlusionScanInterval: TimeInterval = 0.2
+    // Consecutive scans finding the window absent from the on-screen list
+    // (other Space / minimized) vs a momentary Space-transition blip.
+    private var offScreenStreaks: [CGWindowID: Int] = [:]
+    // Consecutive windowByID misses before a pin is treated as closed — one
+    // nil can be a transient CG glitch (Space switch, Mission Control).
+    private var windowMissStreaks: [CGWindowID: Int] = [:]
+    private let maxWindowMissTicks = 45 // ~0.75s at 16ms per tick
 
     // Set once we've prompted the user about Screen Recording permission this
     // session, so we don't keep badgering them every time they click the menu.
@@ -147,7 +173,7 @@ func exitSelectionMode() {
     // MARK: - Snapshot Capture
 
     func captureSnapshot(of windowInfo: WindowInfo) -> NSImage? {
-        guard let cgImage = CGWindowListCreateImage(
+        guard let fullImage = CGWindowListCreateImage(
             windowInfo.bounds,
             .optionIncludingWindow,
             windowInfo.id,
@@ -157,7 +183,22 @@ func exitSelectionMode() {
             return nil
         }
 
-        return NSImage(cgImage: cgImage, size: windowInfo.bounds.size)
+        // Crop the outer 1pt from every side. The capture includes the
+        // source window's edge stroke — a light-gray hairline on INACTIVE
+        // windows — which reads as an artifact on the floating pin.
+        let scale = CGFloat(fullImage.width) / windowInfo.bounds.width
+        let inset = (scale * 1).rounded()
+        let cropRect = CGRect(
+            x: inset, y: inset,
+            width: CGFloat(fullImage.width) - inset * 2,
+            height: CGFloat(fullImage.height) - inset * 2
+        ).integral
+        let cgImage = fullImage.cropping(to: cropRect) ?? fullImage
+
+        return NSImage(
+            cgImage: cgImage,
+            size: CGSize(width: cropRect.width / scale, height: cropRect.height / scale)
+        )
     }
 
     // MARK: - Pin / Unpin
@@ -214,6 +255,11 @@ func exitSelectionMode() {
         lastResizeRecaptureTime.removeAll()
         lastBoundsChangeTime.removeAll()
         hiddenOverlays.removeAll()
+        lastOcclusionScanTime.removeAll()
+        lastOcclusionResult.removeAll()
+        lastOcclusionReason.removeAll()
+        offScreenStreaks.removeAll()
+        windowMissStreaks.removeAll()
         for overlay in snapshot {
             overlay.orderOut(nil)
         }
@@ -225,6 +271,11 @@ func exitSelectionMode() {
         lastResizeRecaptureTime.removeValue(forKey: windowID)
         lastBoundsChangeTime.removeValue(forKey: windowID)
         hiddenOverlays.remove(windowID)
+        lastOcclusionScanTime.removeValue(forKey: windowID)
+        lastOcclusionResult.removeValue(forKey: windowID)
+        lastOcclusionReason.removeValue(forKey: windowID)
+        offScreenStreaks.removeValue(forKey: windowID)
+        windowMissStreaks.removeValue(forKey: windowID)
     }
 
     // MARK: - Accessibility
@@ -282,25 +333,62 @@ func exitSelectionMode() {
 
             // Cheap single-window lookup instead of enumerating everything.
             guard let currentWindow = windowByID(window.id) else {
-                // Window was closed — clean up. orderOut instead of close to
-                // avoid decrementing the app's window count (Clear All chain
-                // was triggering auto-termination).
-                overlay.orderOut(nil)
-                overlays.removeValue(forKey: window.id)
-                pinnedWindows.remove(window)
-                clearTrackingState(for: window.id)
+                // A single nil lookup can be a transient glitch (Space switch,
+                // Mission Control); only treat the window as closed after a
+                // sustained absence, or the pin silently vanishes.
+                let misses = (windowMissStreaks[window.id] ?? 0) + 1
+                windowMissStreaks[window.id] = misses
+                if misses >= maxWindowMissTicks {
+                    // Window was closed — clean up. orderOut instead of close to
+                    // avoid decrementing the app's window count (Clear All chain
+                    // was triggering auto-termination).
+                    overlay.orderOut(nil)
+                    overlays.removeValue(forKey: window.id)
+                    pinnedWindows.remove(window)
+                    clearTrackingState(for: window.id)
+                    windowMissStreaks[window.id] = nil
+                }
                 continue
             }
+            windowMissStreaks[window.id] = nil
 
-            // ponytail: hide the overlay when the source app is frontmost.
-            // The real window covers the overlay entirely — keeping it visible
-            // at .statusBar+1 blocks mouse/keyboard input to the real window
-            // (the typing-lag regression). Hiding also eliminates recapture
-            // cost since there's nothing to preview. The overlay reappears
-            // the moment another app covers the source.
+            // ponytail: overlay visibility tracks whether the real window is
+            // actually EXPOSED (top-most over its own bounds), checked with a
+            // throttled front-to-back scan. The old frontmost-APP proxy broke
+            // twice: clicking the desktop activates Finder without raising the
+            // buried pinned window (pin vanished — "always-on-top not
+            // working"), and a raised-but-not-focused window got the overlay
+            // re-shown over the exposed real window (flash/double image).
             let sourceIsFrontmost = frontmostPID == currentWindow.pid
-            if sourceIsFrontmost {
+            if (now - (lastOcclusionScanTime[window.id] ?? 0)) >= occlusionScanInterval {
+                lastOcclusionScanTime[window.id] = now
+                var hide: Bool
+                var reason: String
+                switch occlusionCheck(currentWindow) {
+                case .exposed:
+                    offScreenStreaks[window.id] = 0
+                    hide = true
+                    reason = "top of stack"
+                case .covered(let why):
+                    offScreenStreaks[window.id] = 0
+                    hide = false
+                    reason = why
+                case .offScreen:
+                    let streak = (offScreenStreaks[window.id] ?? 0) + 1
+                    offScreenStreaks[window.id] = streak
+                    hide = streak >= 3 // ~0.6s sustained — ride out Space transitions
+                    reason = "off-screen streak=\(streak)"
+                }
+                if lastOcclusionResult[window.id] != hide {
+                    visLog("scan wid=\(window.id) hide=\(hide) reason=\(reason) srcFrontmost=\(sourceIsFrontmost)")
+                }
+                lastOcclusionResult[window.id] = hide
+                lastOcclusionReason[window.id] = reason
+            }
+            let shouldHide = lastOcclusionResult[window.id] ?? false
+            if shouldHide {
                 if !hiddenOverlays.contains(window.id) {
+                    visLog("HIDE wid=\(window.id) reason=\(lastOcclusionReason[window.id] ?? "?")")
                     overlay.orderOut(nil)
                     hiddenOverlays.insert(window.id)
                 }
@@ -308,18 +396,15 @@ func exitSelectionMode() {
             } else if hiddenOverlays.contains(window.id) {
                 // Source just became buried — show the overlay, take a fresh
                 // snapshot so it isn't stale from before we hid it.
+                visLog("SHOW wid=\(window.id)")
                 overlay.orderFront(nil)
                 hiddenOverlays.remove(window.id)
                 lastRecaptureTime[window.id] = 0 // force immediate recapture
             }
 
-            // Burial = source app not frontmost. O(1). Misses the rare case where the
-            // source app IS frontmost but a sibling window of that app covers
-            // the pinned one; that's the same passthrough behavior as before
-            // this whole fix, so no regression.
-            // ponytail: frontmost-app proxy; upgrade to a bounds-intersection
-            // front-to-back scan (enumerateWindows) if sibling-window coverage
-            // in a multi-window app starts biting.
+            // Not hidden = the pinned window is (at least partly) covered.
+            // Absorb the next click so we re-front the source app instead of
+            // letting the click fall through to the covering app.
             overlay.setAbsorbsClicks(true)
 
             let prevBounds = lastAppliedBounds[window.id]
@@ -357,9 +442,9 @@ func exitSelectionMode() {
         //  - move (size unchanged): NEVER recapture — bitmap is already valid
         //  - idle pinned window: every idleRecaptureInterval (~5×/sec) so
         //    live content (typing, video) keeps updating
-        //  - actively resizing: every resizeRecaptureInterval (~10×/sec) —
-        //    during resize the existing bitmap is briefly stretched, which
-        //    is far smoother than capturing 60×/sec
+        //  - actively resizing: every resizeRecaptureInterval (~12×/sec) so
+        //    the stretched-between-captures bitmap never accumulates visible
+        //    aspect distortion; captures are off-main, the cost is fine
         //  - just stopped resizing: one final crisp recapture
         // ponytail: suppress idle recapture while bounds are actively changing.
         // Content is identical on a move, so the existing bitmap is still valid —
@@ -391,14 +476,48 @@ func exitSelectionMode() {
         }
     }
 
+    // Occlusion tri-state for a pinned window:
+    //  - .exposed: it's the top-most window over its own bounds → the real
+    //    window is visible, hide the overlay.
+    //  - covered: another on-screen window draws over it (same Space) → show
+    //    the overlay mirror on top. This is the core pin feature.
+    //  - offScreen: not in the on-screen list at all — different Space (e.g.
+    //    a fullscreen app active), minimized, or mid-transition. Floating a
+    //    frozen snapshot over an unrelated Space reads as a ghost, so the
+    //    overlay hides; it reappears when the window's Space returns.
+    private enum OcclusionState {
+        case exposed
+        case covered(reason: String)
+        case offScreen
+    }
+
+    private func occlusionCheck(_ window: WindowInfo) -> OcclusionState {
+        for candidate in enumerateWindows() {
+            guard candidate.bounds.intersects(window.bounds) else { continue }
+            if candidate.id == window.id { return .exposed }
+            return .covered(reason: "under [\(candidate.id)] \(candidate.ownerName) '\(candidate.name)'")
+        }
+        return .offScreen
+    }
+
     // CGWindow bounds use a top-left global origin; AppKit windows use bottom-left.
     private func appKitFrame(for quartzFrame: CGRect) -> CGRect {
         let mainDisplayHeight = CGDisplayBounds(CGMainDisplayID()).height
-        return CGRect(
+        let frame = CGRect(
             x: quartzFrame.minX,
             y: mainDisplayHeight - quartzFrame.maxY,
             width: quartzFrame.width,
             height: quartzFrame.height
+        )
+        // Pixel-align: CG window bounds are often fractional (half-point
+        // window positions), and rendering the snapshot at a subpixel offset
+        // softens text and smears the window's 1px edge stroke into a
+        // hairline. Snap to whole points.
+        return CGRect(
+            x: frame.origin.x.rounded(),
+            y: frame.origin.y.rounded(),
+            width: frame.width.rounded(),
+            height: frame.height.rounded()
         )
     }
 
