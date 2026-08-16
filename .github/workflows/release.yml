@@ -53,15 +53,16 @@ jobs:
               echo "prerelease=false" >> "$GITHUB_OUTPUT"
             fi
             if [[ "$VERSION" != "$PLIST_VERSION" ]]; then
-              echo "::notice::Tag $TAG overrides CFBundleShortVersionString $PLIST_VERSION; commit the bump to keep the repo in sync."
+              echo "::notice::Tag $TAG overrides CFBundleShortVersionString $PLIST_VERSION for this build."
             fi
           fi
 
           BUILD="$(git rev-list --count HEAD)"
-          /usr/libexec/PlistBuddy \
-            -c "Set :CFBundleShortVersionString $VERSION" \
-            -c "Set :CFBundleVersion $BUILD" \
-            "$PLIST"
+          export VERSION BUILD
+          perl -0pi -e '
+            s|(<key>CFBundleShortVersionString</key>\s*\n\s*<string>)[^<]*|$1$ENV{VERSION}|;
+            s|(<key>CFBundleVersion</key>\s*\n\s*<string>)[^<]*|$1$ENV{BUILD}|;
+          ' "$PLIST"
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
@@ -91,71 +92,67 @@ jobs:
           cp "Sources/$APP_NAME/Resources/$APP_NAME.icns" "$APP_BUNDLE/Contents/Resources/$APP_NAME.icns"
           strip -x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
-      - name: Import signing certificate
-        id: signing
+      - name: Check signing configuration
+        id: config
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${MACOS_CERTIFICATE:-}" ]]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "No MACOS_CERTIFICATE secret; the build will be ad-hoc signed."
+          fi
+          if [[ -n "${NOTARY_APPLE_ID:-}" ]]; then
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+            echo "No NOTARY_APPLE_ID secret; notarization will be skipped."
+          fi
+
+      - name: Import signing certificate
+        if: steps.config.outputs.sign == 'true'
+        uses: apple-actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7.0.0
+        with:
+          p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
+          p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+
+      - name: Sign app bundle
+        env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          if [[ -z "${MACOS_CERTIFICATE:-}" ]]; then
-            echo "No MACOS_CERTIFICATE secret; falling back to ad-hoc signing."
-            echo "identity=-" >> "$GITHUB_OUTPUT"
+          if [[ '${{ steps.config.outputs.sign }}' != 'true' ]]; then
+            codesign --force --sign - --entitlements Resources/entitlements.plist "$APP_BUNDLE"
+            codesign --verify --strict --verbose=2 "$APP_BUNDLE"
             exit 0
           fi
 
-          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
-          KEYCHAIN_PWD="$(uuidgen)"
-          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
-
-          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
-          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN_PATH" \
-            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH" >/dev/null
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
-
-          rm -f "$RUNNER_TEMP/certificate.p12"
-
           IDENTITY="${MACOS_SIGNING_IDENTITY:-}"
           if [[ -z "$IDENTITY" ]]; then
-            IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            IDENTITY="$(security find-identity -v -p codesigning \
               | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)"
           fi
           if [[ -z "$IDENTITY" ]]; then
             echo "::error::Certificate imported but no Developer ID Application identity found"
             exit 1
           fi
-          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
-          echo "keychain=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Sign app bundle
-        run: |
-          set -euo pipefail
-          IDENTITY='${{ steps.signing.outputs.identity }}'
-          if [[ "$IDENTITY" == "-" ]]; then
-            codesign --force --sign - --entitlements Resources/entitlements.plist "$APP_BUNDLE"
-          else
-            codesign --force --sign "$IDENTITY" --entitlements Resources/entitlements.plist \
-              --options runtime --timestamp "$APP_BUNDLE"
-          fi
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          codesign --force --sign "$IDENTITY" --entitlements Resources/entitlements.plist \
+            --options runtime --timestamp "$APP_BUNDLE"
           codesign --verify --strict --verbose=2 "$APP_BUNDLE"
 
       - name: Notarize and staple app
-        if: steps.signing.outputs.identity != '-'
+        if: steps.config.outputs.sign == 'true' && steps.config.outputs.notarize == 'true'
         env:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
         run: |
           set -euo pipefail
-          if [[ -z "${NOTARY_APPLE_ID:-}" ]]; then
-            echo "Notary credentials absent; skipping notarization."
-            exit 0
-          fi
           ditto -c -k --keepParent "$APP_BUNDLE" "$RUNNER_TEMP/notarize-app.zip"
           xcrun notarytool submit "$RUNNER_TEMP/notarize-app.zip" \
             --apple-id "$NOTARY_APPLE_ID" \
@@ -193,7 +190,7 @@ jobs:
             "dist/$APP_NAME-${{ steps.version.outputs.version }}.dmg"
 
       - name: Sign, notarize and staple dmg
-        if: steps.signing.outputs.identity != '-'
+        if: steps.config.outputs.sign == 'true'
         env:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
@@ -201,7 +198,7 @@ jobs:
         run: |
           set -euo pipefail
           DMG="dist/$APP_NAME-${{ steps.version.outputs.version }}.dmg"
-          codesign --force --sign '${{ steps.signing.outputs.identity }}' --timestamp "$DMG"
+          codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
           if [[ "${NOTARIZED:-}" == "true" ]]; then
             xcrun notarytool submit "$DMG" \
               --apple-id "$NOTARY_APPLE_ID" \
@@ -218,33 +215,6 @@ jobs:
           shasum -a 256 "$APP_NAME-${{ steps.version.outputs.version }}".* > "SHA256SUMS.txt"
           cat SHA256SUMS.txt
 
-      - name: Extract release notes
-        id: notes
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
-          awk -v v="$VERSION" '
-            $0 ~ "^## \\[" v "\\]" { capture = 1; next }
-            capture && /^## \[/ { exit }
-            capture { print }
-          ' CHANGELOG.md > "$NOTES_FILE"
-
-          if [[ ! -s "$NOTES_FILE" ]]; then
-            echo "No CHANGELOG entry for $VERSION; using default notes."
-            printf 'Pin Top %s\n' "$VERSION" > "$NOTES_FILE"
-          fi
-
-          {
-            echo ""
-            echo "### Install"
-            echo ""
-            echo "Download the \`.dmg\` and drag **Pin Top** into Applications, or unzip the \`.zip\` and move \`PinTop.app\` there."
-            echo "Grant **Screen Recording** and **Accessibility** in System Settings → Privacy & Security on first launch."
-          } >> "$NOTES_FILE"
-
-          echo "path=$NOTES_FILE" >> "$GITHUB_OUTPUT"
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -258,8 +228,6 @@ jobs:
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: Pin Top ${{ steps.version.outputs.version }}
-          body_path: ${{ steps.notes.outputs.path }}
           prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
           draft: false
           fail_on_unmatched_files: true
@@ -268,7 +236,3 @@ jobs:
             dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}.dmg
             dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}.tar.gz
             dist/SHA256SUMS.txt
-
-      - name: Clean up keychain
-        if: always() && steps.signing.outputs.keychain != ''
-        run: security delete-keychain '${{ steps.signing.outputs.keychain }}' || true
