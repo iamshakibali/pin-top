@@ -18,5 +18,10 @@ let package = Package(
             path: "Sources/PinTop",
             resources: [.copy("Resources/PinTop.icns")]
         ),
+        .testTarget(
+            name: "PinTopTests",
+            dependencies: ["PinTop"],
+            path: "Tests/PinTopTests"
+        ),
     ]
 )

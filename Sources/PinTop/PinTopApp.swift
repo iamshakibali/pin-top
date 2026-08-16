@@ -19,6 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: NSMenu!
     private var selectionOverlayWindows: [SelectionOverlayWindow] = []
     private var aboutWindow: AboutWindow?
+    private var settingsWindow: SettingsWindow?
     private var cancellables = Set<AnyCancellable>()
 
     override init() {
@@ -30,6 +31,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ProcessInfo.processInfo.disableAutomaticTermination("Pin Top runs in the menu bar")
 
         setupStatusBar()
+        registerHotkey()
+        maybeAutoCheckUpdates()
 
         // Close SwiftUI's auto-opened Settings window.
         DispatchQueue.main.async {
@@ -39,7 +42,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // leaves the icon rendered by ControlCenter but dead to clicks
                 // (the "icon visible but frozen" bug).
                 if window.className == "NSStatusBarWindow" { continue }
-                if !(window is PinOverlayWindow) && !(window is AboutWindow) {
+                if !(window is PinOverlayWindow) && !(window is AboutWindow)
+                    && !(window is SettingsWindow) {
                     window.close()
                 }
             }
@@ -108,6 +112,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let settingsItem = NSMenuItem(
+            title: "Settings…",
+            action: #selector(settingsMenuItem),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        settingsItem.keyEquivalentModifierMask = .command
+        menu.addItem(settingsItem)
+
         let aboutItem = NSMenuItem(title: "About Pin Top", action: #selector(aboutMenuItem), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
@@ -135,11 +148,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
     }
 
+    /// Toggles pick mode: starts selection if none is active, cancels if one is.
+    /// Invoked by the menu item and the global hotkey.
+    func toggleSelectionMode() {
+        if selectionOverlayWindows.isEmpty {
+            guard let windowManager else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            guard windowManager.enterSelectionMode() else { return }
+            showSelectionOverlay()
+        } else {
+            hideSelectionOverlay()
+            windowManager?.exitSelectionMode()
+        }
+    }
+
     @objc func selectMenuItem() {
-        guard let windowManager else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        guard windowManager.enterSelectionMode() else { return }
-        showSelectionOverlay()
+        toggleSelectionMode()
+    }
+
+    private func registerHotkey() {
+        HotKeyManager.shared.setCombo(SettingsStore.shared.hotkey) { [weak self] in
+            self?.toggleSelectionMode()
+        }
+    }
+
+    private func maybeAutoCheckUpdates() {
+        guard SettingsStore.shared.autoCheckUpdates else { return }
+        guard Date().timeIntervalSince(SettingsStore.shared.lastAutoUpdateCheck) > 24 * 60 * 60
+        else { return }
+        AppUpdater.shared.checkForUpdates(manual: false) { state in
+            switch state {
+            case .upToDate, .error:
+                // Terminal states stamp the throttle; ".available" is stamped
+                // by AppUpdater itself right before it prompts.
+                SettingsStore.shared.lastAutoUpdateCheck = Date()
+                if case .error(let message) = state {
+                    NSLog("[PinTop] automatic update check failed: \(message)")
+                }
+            default:
+                break
+            }
+        }
     }
 
     @objc func clearAllMenuItem() {
@@ -152,6 +201,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func aboutMenuItem() {
         if aboutWindow == nil { aboutWindow = AboutWindow() }
         aboutWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func settingsMenuItem() {
+        if settingsWindow == nil { settingsWindow = SettingsWindow() }
+        settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 

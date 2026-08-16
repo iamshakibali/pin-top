@@ -38,19 +38,6 @@ struct WindowInfo: Identifiable, Equatable, Hashable {
     }
 }
 
-// Diagnostic file log — NSLog from this app doesn't reliably reach the
-// unified log store. Temporary; strip before merging.
-func visLog(_ message: String) {
-    let path = "/tmp/pintop-vis.log"
-    if !FileManager.default.fileExists(atPath: path) {
-        FileManager.default.createFile(atPath: path, contents: nil)
-    }
-    guard let handle = FileHandle(forWritingAtPath: path) else { return }
-    handle.seekToEndOfFile()
-    handle.write("\(Date()) \(message)\n".data(using: .utf8)!)
-    try? handle.close()
-}
-
 // MARK: - WindowManager
 
 class WindowManager: ObservableObject {
@@ -173,8 +160,18 @@ func exitSelectionMode() {
     // MARK: - Snapshot Capture
 
     func captureSnapshot(of windowInfo: WindowInfo) -> NSImage? {
+        // Quantize the capture rect to whole points. Window bounds are often
+        // fractional; letting CG round a fractional rect makes the bitmap's
+        // pixel size wobble between captures (visible as the pin shifting a
+        // few px and its edge sitting wrong).
+        let captureRect = CGRect(
+            x: windowInfo.bounds.minX.rounded(),
+            y: windowInfo.bounds.minY.rounded(),
+            width: windowInfo.bounds.width.rounded(),
+            height: windowInfo.bounds.height.rounded()
+        )
         guard let fullImage = CGWindowListCreateImage(
-            windowInfo.bounds,
+            captureRect,
             .optionIncludingWindow,
             windowInfo.id,
             .bestResolution
@@ -183,22 +180,60 @@ func exitSelectionMode() {
             return nil
         }
 
-        // Crop the outer 1pt from every side. The capture includes the
-        // source window's edge stroke — a light-gray hairline on INACTIVE
-        // windows — which reads as an artifact on the floating pin.
-        let scale = CGFloat(fullImage.width) / windowInfo.bounds.width
-        let inset = (scale * 1).rounded()
-        let cropRect = CGRect(
-            x: inset, y: inset,
-            width: CGFloat(fullImage.width) - inset * 2,
-            height: CGFloat(fullImage.height) - inset * 2
-        ).integral
-        let cgImage = fullImage.cropping(to: cropRect) ?? fullImage
+        // Use the EXACT backing scale of the display hosting the window.
+        // Deriving it as pixels/points of the (often fractional) window rect
+        // leaves the NSImage with a fractional dpi — every later draw then
+        // resamples the whole bitmap by a fraction of a percent, which
+        // softens all text. A whole-number dpi lets the view draw 1:1.
+        let displayScale = Self.backingScale(for: windowInfo.bounds)
+        var cgImage = fullImage
 
+        // The pin usually mirrors the window in its INACTIVE state (it's
+        // buried precisely because it lost focus) — macOS renders inactive
+        // windows dimmed and desaturated, so the pin reads washed-out
+        // ("blurry") next to active windows even though the bitmap is pixel
+        // sharp. Nudge brightness/saturation to approximate the active look.
+        // Subtle on purpose — remove if it ever overshoots.
+        if let lifted = Self.activeAppearanceLift(cgImage) {
+            cgImage = lifted
+        }
+
+        // No edge crop: the capture's 1px window stroke stays in the bitmap
+        // and the bitmap fills the overlay edge to edge. Cropping it created
+        // a 1pt transparent rim through which the real window's stroke (or
+        // the covering app) peeked — the actual "wrong edge" artifact.
         return NSImage(
             cgImage: cgImage,
-            size: CGSize(width: cropRect.width / scale, height: cropRect.height / scale)
+            size: CGSize(width: CGFloat(cgImage.width) / displayScale, height: CGFloat(cgImage.height) / displayScale)
         )
+    }
+
+    // Whole-number backing scale (1 or 2) of the display containing the
+    // rect's center; Retina is the sensible fallback if no display matches.
+    private static let ciContext = CIContext()
+
+    // Mild CIColorControls lift approximating an ACTIVE window's appearance.
+    private static func activeAppearanceLift(_ image: CGImage) -> CGImage? {
+        let input = CIImage(cgImage: image)
+        guard let controls = CIFilter(name: "CIColorControls") else { return nil }
+        controls.setValue(input, forKey: kCIInputImageKey)
+        controls.setValue(1.06, forKey: "inputSaturation")
+        controls.setValue(0.02, forKey: "inputBrightness")
+        controls.setValue(1.03, forKey: "inputContrast")
+        guard let output = controls.outputImage else { return nil }
+        return ciContext.createCGImage(output, from: output.extent)
+    }
+
+    private static func backingScale(for rect: CGRect) -> CGFloat {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 8)
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(8, &ids, &count)
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        for id in ids.prefix(Int(count)) where CGDisplayBounds(id).contains(center) {
+            guard let mode = CGDisplayCopyDisplayMode(id) else { continue }
+            return (CGFloat(mode.pixelWidth) / CGDisplayBounds(id).width).rounded()
+        }
+        return 2
     }
 
     // MARK: - Pin / Unpin
@@ -379,16 +414,12 @@ func exitSelectionMode() {
                     hide = streak >= 3 // ~0.6s sustained — ride out Space transitions
                     reason = "off-screen streak=\(streak)"
                 }
-                if lastOcclusionResult[window.id] != hide {
-                    visLog("scan wid=\(window.id) hide=\(hide) reason=\(reason) srcFrontmost=\(sourceIsFrontmost)")
-                }
                 lastOcclusionResult[window.id] = hide
                 lastOcclusionReason[window.id] = reason
             }
             let shouldHide = lastOcclusionResult[window.id] ?? false
             if shouldHide {
                 if !hiddenOverlays.contains(window.id) {
-                    visLog("HIDE wid=\(window.id) reason=\(lastOcclusionReason[window.id] ?? "?")")
                     overlay.orderOut(nil)
                     hiddenOverlays.insert(window.id)
                 }
@@ -396,7 +427,6 @@ func exitSelectionMode() {
             } else if hiddenOverlays.contains(window.id) {
                 // Source just became buried — show the overlay, take a fresh
                 // snapshot so it isn't stale from before we hid it.
-                visLog("SHOW wid=\(window.id)")
                 overlay.orderFront(nil)
                 hiddenOverlays.remove(window.id)
                 lastRecaptureTime[window.id] = 0 // force immediate recapture

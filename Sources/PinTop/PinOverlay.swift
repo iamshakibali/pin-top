@@ -33,11 +33,14 @@ class PinOverlayWindow: NSWindow {
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         self.acceptsMouseMovedEvents = false
 
-        // Configure image view
+        // Configure image view. The view is sized to the bitmap's own point
+        // size (never stretched to the window frame) so every draw is 1:1 —
+        // see updateSnapshot. The bitmap is full-bleed (includes the window's
+        // native 1px edge stroke) and fills the window edge to edge.
         imageView.image = snapshot
-        imageView.frame = NSRect(origin: .zero, size: frame.size)
-        imageView.imageScaling = .scaleAxesIndependently
-        imageView.autoresizingMask = [.width, .height]
+        imageView.frame = NSRect(origin: .zero, size: snapshot.size)
+        imageView.imageScaling = .scaleNone
+        imageView.autoresizingMask = []
         imageView.wantsLayer = true
         imageView.layer?.contentsGravity = .resizeAspectFill
         imageView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -52,15 +55,11 @@ class PinOverlayWindow: NSWindow {
 
     func updateSnapshot(_ snapshot: NSImage) {
         imageView.image = snapshot
-        // Diagnostic: flag snapshots below the Retina expectation for the
-        // current frame — a 1x capture stretched onto a 2x display is the
-        // classic "pin looks blurry" cause.
-        let expectedW = Int(frame.width * 2)
-        let pxW = snapshot.representations.first?.pixelsWide ?? 0
-        let pxH = snapshot.representations.first?.pixelsHigh ?? 0
-        if pxW > 0 && pxW < expectedW - 2 {
-            visLog("LOW-RES snapshot wid=\(windowID) px=\(pxW)x\(pxH) frame=\(Int(frame.width))x\(Int(frame.height)) expected≈\(expectedW)")
-        }
+        // Size the view to the BITMAP's point size, not the window frame.
+        // Stretching even a fraction of a point resamples every pixel and
+        // softens the whole image ("pin looks blurry / not native"). The
+        // frame tracks the window; the view draws the bitmap 1:1 inside it.
+        imageView.frame = NSRect(origin: imageView.frame.origin, size: snapshot.size)
     }
 
     // Called from the refresh loop: when the real pinned window is covered by
@@ -80,7 +79,6 @@ class PinOverlayWindow: NSWindow {
     // directly beneath the overlay. Next tick drops us back to passthrough and
     // subsequent clicks reach the real window normally.
     override func mouseDown(with event: NSEvent) {
-        visLog("overlay mouseDown wid=\(windowID) — raising source pid=\(pid)")
         // Defer activation until after the current click event finishes
         // resolving. Activating synchronously inside mouseDown gets undone
         // by AppKit's post-event focus resolution — focus bounced back to
