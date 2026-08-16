@@ -1,0 +1,238 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_NAME: PinTop
+  APP_BUNDLE: PinTop.app
+  VOLUME_NAME: Pin Top
+
+jobs:
+  release:
+    name: Build, package and publish
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: latest-stable
+
+      - name: Resolve and stamp version
+        id: version
+        run: |
+          set -euo pipefail
+          PLIST=Resources/Info.plist
+          PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+          VERSION="$PLIST_VERSION"
+
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            if [[ "$VERSION" == *-* ]]; then
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            fi
+            if [[ "$VERSION" != "$PLIST_VERSION" ]]; then
+              echo "::notice::Tag $TAG overrides CFBundleShortVersionString $PLIST_VERSION for this build."
+            fi
+          fi
+
+          BUILD="$(git rev-list --count HEAD)"
+          export VERSION BUILD
+          perl -0pi -e '
+            s|(<key>CFBundleShortVersionString</key>\s*\n\s*<string>)[^<]*|$1$ENV{VERSION}|;
+            s|(<key>CFBundleVersion</key>\s*\n\s*<string>)[^<]*|$1$ENV{BUILD}|;
+          ' "$PLIST"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION (build $BUILD)"
+
+      - name: Build universal binary
+        run: |
+          set -euo pipefail
+          DEPLOYMENT_TARGET=14.0
+          for ARCH in arm64 x86_64; do
+            swift build -c release \
+              --scratch-path "$RUNNER_TEMP/build-$ARCH" \
+              -Xswiftc -target -Xswiftc "$ARCH-apple-macos$DEPLOYMENT_TARGET"
+          done
+          lipo -create -output "$RUNNER_TEMP/$APP_NAME" \
+            "$RUNNER_TEMP/build-arm64/release/$APP_NAME" \
+            "$RUNNER_TEMP/build-x86_64/release/$APP_NAME"
+          lipo -info "$RUNNER_TEMP/$APP_NAME"
+
+      - name: Assemble app bundle
+        run: |
+          set -euo pipefail
+          rm -rf "$APP_BUNDLE"
+          mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+          cp Resources/Info.plist "$APP_BUNDLE/Contents/Info.plist"
+          cp "$RUNNER_TEMP/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+          cp "Sources/$APP_NAME/Resources/$APP_NAME.icns" "$APP_BUNDLE/Contents/Resources/$APP_NAME.icns"
+          strip -x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+
+      - name: Check signing configuration
+        id: config
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${MACOS_CERTIFICATE:-}" ]]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "No MACOS_CERTIFICATE secret; the build will be ad-hoc signed."
+          fi
+          if [[ -n "${NOTARY_APPLE_ID:-}" ]]; then
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+            echo "No NOTARY_APPLE_ID secret; notarization will be skipped."
+          fi
+
+      - name: Import signing certificate
+        if: steps.config.outputs.sign == 'true'
+        uses: apple-actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7.0.0
+        with:
+          p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
+          p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+
+      - name: Sign app bundle
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [[ '${{ steps.config.outputs.sign }}' != 'true' ]]; then
+            codesign --force --sign - --entitlements Resources/entitlements.plist "$APP_BUNDLE"
+            codesign --verify --strict --verbose=2 "$APP_BUNDLE"
+            exit 0
+          fi
+
+          IDENTITY="${MACOS_SIGNING_IDENTITY:-}"
+          if [[ -z "$IDENTITY" ]]; then
+            IDENTITY="$(security find-identity -v -p codesigning \
+              | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)"
+          fi
+          if [[ -z "$IDENTITY" ]]; then
+            echo "::error::Certificate imported but no Developer ID Application identity found"
+            exit 1
+          fi
+
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          codesign --force --sign "$IDENTITY" --entitlements Resources/entitlements.plist \
+            --options runtime --timestamp "$APP_BUNDLE"
+          codesign --verify --strict --verbose=2 "$APP_BUNDLE"
+
+      - name: Notarize and staple app
+        if: steps.config.outputs.sign == 'true' && steps.config.outputs.notarize == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent "$APP_BUNDLE" "$RUNNER_TEMP/notarize-app.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize-app.zip" \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --password "$NOTARY_PASSWORD" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$APP_BUNDLE"
+          echo "NOTARIZED=true" >> "$GITHUB_ENV"
+
+      - name: Package zip
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --keepParent "$APP_BUNDLE" "dist/$APP_NAME-${{ steps.version.outputs.version }}.zip"
+
+      - name: Package tarball
+        run: |
+          set -euo pipefail
+          tar -czf "dist/$APP_NAME-${{ steps.version.outputs.version }}.tar.gz" "$APP_BUNDLE"
+
+      - name: Package dmg
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/dmg-stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          ditto "$APP_BUNDLE" "$STAGE/$APP_BUNDLE"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create \
+            -volname "$VOLUME_NAME" \
+            -srcfolder "$STAGE" \
+            -fs HFS+ \
+            -format UDZO \
+            -ov \
+            "dist/$APP_NAME-${{ steps.version.outputs.version }}.dmg"
+
+      - name: Sign, notarize and staple dmg
+        if: steps.config.outputs.sign == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          DMG="dist/$APP_NAME-${{ steps.version.outputs.version }}.dmg"
+          codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
+          if [[ "${NOTARIZED:-}" == "true" ]]; then
+            xcrun notarytool submit "$DMG" \
+              --apple-id "$NOTARY_APPLE_ID" \
+              --password "$NOTARY_PASSWORD" \
+              --team-id "$NOTARY_TEAM_ID" \
+              --wait
+            xcrun stapler staple "$DMG"
+          fi
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 "$APP_NAME-${{ steps.version.outputs.version }}".* > "SHA256SUMS.txt"
+          cat SHA256SUMS.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.APP_NAME }}-${{ steps.version.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          draft: false
+          fail_on_unmatched_files: true
+          files: |
+            dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}.zip
+            dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}.dmg
+            dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}.tar.gz
+            dist/SHA256SUMS.txt
