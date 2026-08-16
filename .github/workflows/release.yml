@@ -35,31 +35,37 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: Resolve version
+      - name: Resolve and stamp version
         id: version
         run: |
           set -euo pipefail
-          PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
-          BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist)"
+          PLIST=Resources/Info.plist
+          PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+          VERSION="$PLIST_VERSION"
 
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
-            TAG_VERSION="${TAG#v}"
-            if [[ "$TAG_VERSION" != "$PLIST_VERSION" ]]; then
-              echo "::error::Tag $TAG does not match CFBundleShortVersionString $PLIST_VERSION in Resources/Info.plist"
-              exit 1
-            fi
+            VERSION="${TAG#v}"
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-            if [[ "$TAG_VERSION" == *-* ]]; then
+            if [[ "$VERSION" == *-* ]]; then
               echo "prerelease=true" >> "$GITHUB_OUTPUT"
             else
               echo "prerelease=false" >> "$GITHUB_OUTPUT"
             fi
+            if [[ "$VERSION" != "$PLIST_VERSION" ]]; then
+              echo "::notice::Tag $TAG overrides CFBundleShortVersionString $PLIST_VERSION; commit the bump to keep the repo in sync."
+            fi
           fi
 
-          echo "version=$PLIST_VERSION" >> "$GITHUB_OUTPUT"
-          echo "build=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "Version $PLIST_VERSION (build $BUILD_NUMBER)"
+          BUILD="$(git rev-list --count HEAD)"
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleShortVersionString $VERSION" \
+            -c "Set :CFBundleVersion $BUILD" \
+            "$PLIST"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION (build $BUILD)"
 
       - name: Build universal binary
         run: |
