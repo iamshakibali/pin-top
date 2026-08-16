@@ -36,7 +36,7 @@ class AppUpdater {
         didSet { DispatchQueue.main.async { self.stateHandler?(self.currentState) } }
     }
 
-    func checkForUpdates(onStateChange: ((UpdateState) -> Void)? = nil) {
+    func checkForUpdates(manual: Bool = true, onStateChange: ((UpdateState) -> Void)? = nil) {
         stateHandler = onStateChange
         currentState = .checking
 
@@ -80,10 +80,34 @@ class AppUpdater {
                 return
             }
 
-            self.currentState = .available(latestVersion)
-            self.downloadAndInstall(from: downloadURL)
+            if manual {
+                self.currentState = .available(latestVersion)
+                self.downloadAndInstall(from: downloadURL)
+            } else {
+                // Stamp before prompting so "Later" won't re-nag inside the
+                // 24h window (see SettingsStore).
+                SettingsStore.shared.lastAutoUpdateCheck = Date()
+                self.currentState = .available(latestVersion)
+                self.promptToInstall(version: latestVersion, downloadURL: downloadURL)
+            }
         }
         task.resume()
+    }
+
+    /// Automatic-check update prompt. App-modal only pins our own app, which
+    /// has no other windows — the user's other apps stay usable.
+    private func promptToInstall(version: String, downloadURL: URL) {
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Update Available"
+            alert.informativeText = "Pin Top \(version) is ready to install."
+            alert.addButton(withTitle: "Install Update")
+            alert.addButton(withTitle: "Later")
+            if alert.runModal() == .alertFirstButtonReturn {
+                self.downloadAndInstall(from: downloadURL)
+            }
+        }
     }
 
     // ponytail: simple semver compare — split on ".", compare each component as Int.
