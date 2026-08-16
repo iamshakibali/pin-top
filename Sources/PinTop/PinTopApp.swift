@@ -34,6 +34,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Close SwiftUI's auto-opened Settings window.
         DispatchQueue.main.async {
             for window in NSApp.windows {
+                // NSStatusBarWindow isn't exposed to Swift, so match by class
+                // name. It hosts the menu-bar icon's click target — closing it
+                // leaves the icon rendered by ControlCenter but dead to clicks
+                // (the "icon visible but frozen" bug).
+                if window.className == "NSStatusBarWindow" { continue }
                 if !(window is PinOverlayWindow) && !(window is AboutWindow) {
                     window.close()
                 }
