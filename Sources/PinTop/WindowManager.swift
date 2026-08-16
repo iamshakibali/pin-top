@@ -283,6 +283,9 @@ func exitSelectionMode() {
         )
         overlay.orderFront(nil)
         overlays[window.id] = overlay
+        // Seed bounds tracking with the frame just applied so the first
+        // refresh tick can already tell a move apart from a resize.
+        lastAppliedBounds[window.id] = window.bounds
     }
 
     func unpin(_ window: WindowInfo) {
@@ -490,10 +493,21 @@ func exitSelectionMode() {
         let settleRecaptureDue = !boundsChanged && lastChange > 0 && (now - lastChange) < settleRecaptureDelay && (now - prevResizeRecapture) >= resizeRecaptureInterval
 
         if boundsChanged {
-            // display:false — let AppKit repaint at the next vsync instead of
-            // forcing a synchronous redraw here.画面 is smoother because we're
-            // not blocking the main thread on paint during a burst of moves.
-            overlay.setFrame(appKitFrame(for: currentWindow.bounds), display: false)
+            let newFrame = appKitFrame(for: currentWindow.bounds)
+            if sizeChanged {
+                // Resize: redraw synchronously at the new size. With
+                // display:false the resized backing store stayed unflushed and
+                // the window server kept compositing stale intermediate
+                // surfaces — the stuck full-opacity frames of issue #6.
+                overlay.setFrame(newFrame, display: true)
+            } else {
+                // Pure move: setFrameOrigin translates the window's surface
+                // inside the window server without touching the backing store,
+                // so there is no lazily-unpainted region to leave behind along
+                // the movement path (issue #6). Also cheaper than setFrame,
+                // which keeps 60Hz move tracking smooth.
+                overlay.setFrameOrigin(newFrame.origin)
+            }
             lastAppliedBounds[window.id] = currentWindow.bounds
             if sizeChanged {
                 lastBoundsChangeTime[window.id] = now
