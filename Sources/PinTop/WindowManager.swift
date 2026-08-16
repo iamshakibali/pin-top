@@ -57,12 +57,12 @@ class WindowManager: ObservableObject {
     // its bounds aren't changing.
     private var lastRecaptureTime: [CGWindowID: TimeInterval] = [:]
     private let idleRecaptureInterval: TimeInterval = 0.5
-    // During active resize we throttle the expensive snapshot recapture so
-    // the main thread doesn't saturate and the resize stays smooth. The
-    // overlay's frame still tracks every tick (cheap), so the box follows
-    // the source window 1:1 even though the bitmap refreshes less often.
+    // During active resize we throttle the snapshot recapture — captures run
+    // on the background captureQueue, so the rate can stay high (≈12×/sec);
+    // at the old 0.25s the stretched-between-captures bitmap accumulated
+    // visible aspect distortion (stretched text, squashed rows).
     private var lastResizeRecaptureTime: [CGWindowID: TimeInterval] = [:]
-    private let resizeRecaptureInterval: TimeInterval = 0.25
+    private let resizeRecaptureInterval: TimeInterval = 0.08
     // When bounds stop changing, force one final crisp recapture after this
     // delay so the overlay shows correct (un-stretched) content post-resize.
     private var lastBoundsChangeTime: [CGWindowID: TimeInterval] = [:]
@@ -147,7 +147,7 @@ func exitSelectionMode() {
     // MARK: - Snapshot Capture
 
     func captureSnapshot(of windowInfo: WindowInfo) -> NSImage? {
-        guard let cgImage = CGWindowListCreateImage(
+        guard let fullImage = CGWindowListCreateImage(
             windowInfo.bounds,
             .optionIncludingWindow,
             windowInfo.id,
@@ -157,7 +157,22 @@ func exitSelectionMode() {
             return nil
         }
 
-        return NSImage(cgImage: cgImage, size: windowInfo.bounds.size)
+        // Crop the outer 1pt from every side. The capture includes the
+        // source window's edge stroke — a light-gray hairline on INACTIVE
+        // windows — which reads as an artifact on the floating pin.
+        let scale = CGFloat(fullImage.width) / windowInfo.bounds.width
+        let inset = (scale * 1).rounded()
+        let cropRect = CGRect(
+            x: inset, y: inset,
+            width: CGFloat(fullImage.width) - inset * 2,
+            height: CGFloat(fullImage.height) - inset * 2
+        ).integral
+        let cgImage = fullImage.cropping(to: cropRect) ?? fullImage
+
+        return NSImage(
+            cgImage: cgImage,
+            size: CGSize(width: cropRect.width / scale, height: cropRect.height / scale)
+        )
     }
 
     // MARK: - Pin / Unpin
@@ -357,9 +372,9 @@ func exitSelectionMode() {
         //  - move (size unchanged): NEVER recapture — bitmap is already valid
         //  - idle pinned window: every idleRecaptureInterval (~5×/sec) so
         //    live content (typing, video) keeps updating
-        //  - actively resizing: every resizeRecaptureInterval (~10×/sec) —
-        //    during resize the existing bitmap is briefly stretched, which
-        //    is far smoother than capturing 60×/sec
+        //  - actively resizing: every resizeRecaptureInterval (~12×/sec) so
+        //    the stretched-between-captures bitmap never accumulates visible
+        //    aspect distortion; captures are off-main, the cost is fine
         //  - just stopped resizing: one final crisp recapture
         // ponytail: suppress idle recapture while bounds are actively changing.
         // Content is identical on a move, so the existing bitmap is still valid —
@@ -394,11 +409,21 @@ func exitSelectionMode() {
     // CGWindow bounds use a top-left global origin; AppKit windows use bottom-left.
     private func appKitFrame(for quartzFrame: CGRect) -> CGRect {
         let mainDisplayHeight = CGDisplayBounds(CGMainDisplayID()).height
-        return CGRect(
+        let frame = CGRect(
             x: quartzFrame.minX,
             y: mainDisplayHeight - quartzFrame.maxY,
             width: quartzFrame.width,
             height: quartzFrame.height
+        )
+        // Pixel-align: CG window bounds are often fractional (half-point
+        // window positions), and rendering the snapshot at a subpixel offset
+        // softens text and smears the window's 1px edge stroke into a
+        // hairline. Snap to whole points.
+        return CGRect(
+            x: frame.origin.x.rounded(),
+            y: frame.origin.y.rounded(),
+            width: frame.width.rounded(),
+            height: frame.height.rounded()
         )
     }
 
