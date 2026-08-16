@@ -173,8 +173,18 @@ func exitSelectionMode() {
     // MARK: - Snapshot Capture
 
     func captureSnapshot(of windowInfo: WindowInfo) -> NSImage? {
+        // Quantize the capture rect to whole points. Window bounds are often
+        // fractional; letting CG round a fractional rect makes the bitmap's
+        // pixel size wobble between captures (visible as the pin shifting a
+        // few px and its edge sitting wrong).
+        let captureRect = CGRect(
+            x: windowInfo.bounds.minX.rounded(),
+            y: windowInfo.bounds.minY.rounded(),
+            width: windowInfo.bounds.width.rounded(),
+            height: windowInfo.bounds.height.rounded()
+        )
         guard let fullImage = CGWindowListCreateImage(
-            windowInfo.bounds,
+            captureRect,
             .optionIncludingWindow,
             windowInfo.id,
             .bestResolution
@@ -198,7 +208,29 @@ func exitSelectionMode() {
             width: CGFloat(fullImage.width) - inset * 2,
             height: CGFloat(fullImage.height) - inset * 2
         ).integral
-        let cgImage = fullImage.cropping(to: cropRect) ?? fullImage
+        var cgImage = fullImage.cropping(to: cropRect) ?? fullImage
+
+        // The pin usually mirrors the window in its INACTIVE state (it's
+        // buried precisely because it lost focus) — macOS renders inactive
+        // windows dimmed and desaturated, so the pin reads washed-out
+        // ("blurry") next to active windows even though the bitmap is pixel
+        // sharp. Nudge brightness/saturation to approximate the active look.
+        // Subtle on purpose — remove if it ever overshoots.
+        if let lifted = Self.activeAppearanceLift(cgImage) {
+            cgImage = lifted
+        }
+
+        // Diagnostic (temporary): dump the first capture after launch so the
+        // bitmap quality can be compared against the on-screen result —
+        // separates "capture is already soft" from "rendering softens it".
+        if Self.dumpNextCapture {
+            Self.dumpNextCapture = false
+            let rep = NSBitmapImageRep(cgImage: fullImage)
+            if let data = rep.representation(using: .png, properties: [:]) {
+                try? data.write(to: URL(fileURLWithPath: "/tmp/pintop-capture.png"))
+                visLog("dumped raw capture \(fullImage.width)x\(fullImage.height) px to /tmp/pintop-capture.png")
+            }
+        }
 
         return NSImage(
             cgImage: cgImage,
@@ -208,6 +240,21 @@ func exitSelectionMode() {
 
     // Whole-number backing scale (1 or 2) of the display containing the
     // rect's center; Retina is the sensible fallback if no display matches.
+    private static var dumpNextCapture = true
+    private static let ciContext = CIContext()
+
+    // Mild CIColorControls lift approximating an ACTIVE window's appearance.
+    private static func activeAppearanceLift(_ image: CGImage) -> CGImage? {
+        let input = CIImage(cgImage: image)
+        guard let controls = CIFilter(name: "CIColorControls") else { return nil }
+        controls.setValue(input, forKey: kCIInputImageKey)
+        controls.setValue(1.06, forKey: "inputSaturation")
+        controls.setValue(0.02, forKey: "inputBrightness")
+        controls.setValue(1.03, forKey: "inputContrast")
+        guard let output = controls.outputImage else { return nil }
+        return ciContext.createCGImage(output, from: output.extent)
+    }
+
     private static func backingScale(for rect: CGRect) -> CGFloat {
         var ids = [CGDirectDisplayID](repeating: 0, count: 8)
         var count: UInt32 = 0
