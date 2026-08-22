@@ -70,6 +70,10 @@ class WindowManager: ObservableObject {
     // its bounds aren't changing.
     private var lastRecaptureTime: [CGWindowID: TimeInterval] = [:]
     private let idleRecaptureInterval: TimeInterval = 0.5
+    // While the source is exposed AND its app is frontmost, the always-
+    // visible overlay is covering a live window the user is interacting
+    // with — refresh at interaction rate so typing/scrolling reads live.
+    private let activeUseRecaptureInterval: TimeInterval = 0.08
     // During active resize we throttle the snapshot recapture — captures run
     // on the background captureQueue, so the rate can stay high (≈12×/sec);
     // at the old 0.25s the stretched-between-captures bitmap accumulated
@@ -80,16 +84,42 @@ class WindowManager: ObservableObject {
     // delay so the overlay shows correct (un-stretched) content post-resize.
     private var lastBoundsChangeTime: [CGWindowID: TimeInterval] = [:]
     private let settleRecaptureDelay: TimeInterval = 0.1
-    // ponytail: track which overlays are hidden because their source app is
-    // frontmost. Avoids calling orderOut/orderFront every tick — only on
-    // actual visibility transitions. Hidden overlays don't block input and
-    // don't need recapture (the real window covers them entirely).
+    // ponytail: track which overlays are hidden because their source left
+    // the screen (other Space / minimized). Avoids calling orderOut/
+    // orderFront every tick — only on actual transitions. Hidden overlays
+    // don't block input and don't need recapture.
     private var hiddenOverlays: Set<CGWindowID> = []
+    private var appSwitchObserver: NSObjectProtocol?
     // Occlusion scan state: throttled front-to-back check per pinned window
     // that decides overlay visibility (see occlusionCheck).
     private var lastOcclusionScanTime: [CGWindowID: TimeInterval] = [:]
     private var lastOcclusionResult: [CGWindowID: Bool] = [:]
     private var lastOcclusionReason: [CGWindowID: String] = [:]
+    // Whether the source window was top-over-its-own-bounds at the last
+    // scan — drives click pass-through vs absorption (NOT visibility).
+    private var lastOcclusionExposed: [CGWindowID: Bool] = [:]
+    // Mission Control / App Exposé state, probed at the scan cadence. While
+    // a system overview is up, the overlay must hide: it would otherwise
+    // float ABOVE the overview UI, showing a full-size frozen copy over the
+    // shrunken real window — reads as a duplicated window. The real window
+    // already represents the pin in the overview grid.
+    // Signature measured on this machine (macOS 26): the overview's UI is
+    // owned by the Dock, and while it is up the Dock's on-screen window
+    // count bursts from a resting 2-4 to 14-15. (The classic owner="Dock" +
+    // layer≥1000 signature does NOT match — those windows sit at other
+    // layers.) Mid-overview redraws can momentarily read low again, so
+    // re-showing is debounced by consecutive samples.
+    private var systemOverviewActive = false
+    private var lastOverviewProbeTime: TimeInterval = 0
+    private var overviewCloseStreak = 0
+    // Faster than the occlusion scan: hiding must land within the first
+    // frames of the overview's zoom animation or it reads as the pin
+    // "showing, then disappearing after a delay". The window-list call is
+    // ~2ms; at 30ms cadence that's a few percent of a core while pins exist.
+    private let overviewProbeInterval: TimeInterval = 0.03
+    // After the overview closes, hold the overlay hidden this many samples
+    // (~300ms) so it never pops back mid exit-animation.
+    private let overviewCloseDebounce = 10
     private let occlusionScanInterval: TimeInterval = 0.2
     // Consecutive scans finding the window absent from the on-screen list
     // (other Space / minimized) vs a momentary Space-transition blip.
@@ -108,10 +138,31 @@ class WindowManager: ObservableObject {
 
     private init() {
         startRefreshTimer()
+        startAppSwitchObserver()
     }
 
     deinit {
         refreshTimer?.cancel()
+        if let observer = appSwitchObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+    }
+
+    // App switches are the only moments the window server can demote our
+    // (inactive-app) overlay below the newly active app's windows. Re-assert
+    // immediately instead of waiting for the next covered/exposed transition.
+    private func startAppSwitchObserver() {
+        appSwitchObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            let visible = self.overlays.filter { !self.hiddenOverlays.contains($0.key) }
+            for (_, overlay) in visible {
+                overlay.orderFrontRegardless()
+            }
+        }
     }
 
     // MARK: - Window Enumeration
@@ -172,7 +223,7 @@ func exitSelectionMode() {
 
     // MARK: - Snapshot Capture
 
-    func captureSnapshot(of windowInfo: WindowInfo) -> NSImage? {
+    func captureSnapshot(of windowInfo: WindowInfo, sourceIsActive: Bool = true) -> NSImage? {
         // Quantize the capture rect to whole points. Window bounds are often
         // fractional; letting CG round a fractional rect makes the bitmap's
         // pixel size wobble between captures (visible as the pin shifting a
@@ -201,13 +252,16 @@ func exitSelectionMode() {
         let displayScale = Self.backingScale(for: windowInfo.bounds)
         var cgImage = fullImage
 
-        // The pin usually mirrors the window in its INACTIVE state (it's
-        // buried precisely because it lost focus) — macOS renders inactive
-        // windows dimmed and desaturated, so the pin reads washed-out
-        // ("blurry") next to active windows even though the bitmap is pixel
-        // sharp. Nudge brightness/saturation to approximate the active look.
-        // Subtle on purpose — remove if it ever overshoots.
-        if let lifted = Self.activeAppearanceLift(cgImage) {
+        // The pin must keep reading like the ACTIVE window — it's the whole
+        // point of pinning. When the snapshot is taken while the source app
+        // is inactive, macOS has already dimmed/desaturated the content in
+        // the window's own backing store, so invert that measured transform
+        // (inactive loses ~23% saturation, gains ~0.003 brightness and loses
+        // ~9% luma contrast — measured empirically). Without this the pin
+        // visibly changes color the moment the overlay takes over from the
+        // real window. Active-state captures get NO lift or colors would
+        // overshoot into over-saturation.
+        if !sourceIsActive, let lifted = Self.activeAppearanceLift(cgImage) {
             cgImage = lifted
         }
 
@@ -225,14 +279,17 @@ func exitSelectionMode() {
     // rect's center; Retina is the sensible fallback if no display matches.
     private static let ciContext = CIContext()
 
-    // Mild CIColorControls lift approximating an ACTIVE window's appearance.
+    // Inverse of macOS's inactive-window dimming, measured empirically:
+    // an inactive window's content averages sat ×0.77, V +0.0034, luma
+    // contrast ×0.91 versus its active render. These values undo exactly
+    // that — see captureSnapshot for when the lift is applied.
     private static func activeAppearanceLift(_ image: CGImage) -> CGImage? {
         let input = CIImage(cgImage: image)
         guard let controls = CIFilter(name: "CIColorControls") else { return nil }
         controls.setValue(input, forKey: kCIInputImageKey)
-        controls.setValue(1.06, forKey: "inputSaturation")
-        controls.setValue(0.02, forKey: "inputBrightness")
-        controls.setValue(1.03, forKey: "inputContrast")
+        controls.setValue(1.27, forKey: "inputSaturation")
+        controls.setValue(-0.02, forKey: "inputBrightness")
+        controls.setValue(1.10, forKey: "inputContrast")
         guard let output = controls.outputImage else { return nil }
         return ciContext.createCGImage(output, from: output.extent)
     }
@@ -257,7 +314,8 @@ func exitSelectionMode() {
         // Capture initial snapshot. A nil result reliably means Screen
         // Recording permission is missing on macOS 10.15+ — surface the
         // prompt, but only once per session so the user isn't badgered.
-        guard let snapshot = captureSnapshot(of: window) else {
+        let sourceActiveAtPin = NSWorkspace.shared.frontmostApplication?.processIdentifier == window.pid
+        guard let snapshot = captureSnapshot(of: window, sourceIsActive: sourceActiveAtPin) else {
             if !hasPromptedScreenCaptureThisSession {
                 hasPromptedScreenCaptureThisSession = true
                 requestScreenCapturePermission()
@@ -281,7 +339,15 @@ func exitSelectionMode() {
             windowID: window.id,
             pid: window.pid
         )
-        overlay.orderFront(nil)
+        // orderFrontRegardless, not orderFront: PinTop is a background app,
+        // and ordering front from a NON-active application is only advisory —
+        // AppKit warns the window "may order beneath the active application's
+        // windows". Every click on another app makes that app active, so a
+        // plain orderFront lets the system demote the pin under the covering
+        // window on each app switch — visible as the pin "blinking" between
+        // floating and sunk. orderFrontRegardless is the documented way to
+        // put a floating window above the active app's windows.
+        overlay.orderFrontRegardless()
         overlays[window.id] = overlay
         // Seed bounds tracking with the frame just applied so the first
         // refresh tick can already tell a move apart from a resize.
@@ -320,6 +386,7 @@ func exitSelectionMode() {
         hiddenOverlays.removeAll()
         lastOcclusionScanTime.removeAll()
         lastOcclusionResult.removeAll()
+        lastOcclusionExposed.removeAll()
         lastOcclusionReason.removeAll()
         offScreenStreaks.removeAll()
         windowMissStreaks.removeAll()
@@ -343,6 +410,7 @@ func exitSelectionMode() {
         hiddenOverlays.remove(windowID)
         lastOcclusionScanTime.removeValue(forKey: windowID)
         lastOcclusionResult.removeValue(forKey: windowID)
+        lastOcclusionExposed.removeValue(forKey: windowID)
         lastOcclusionReason.removeValue(forKey: windowID)
         offScreenStreaks.removeValue(forKey: windowID)
         windowMissStreaks.removeValue(forKey: windowID)
@@ -394,6 +462,23 @@ func exitSelectionMode() {
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
 
         // Iterate over a copy: removing from a Set while iterating it can crash.
+        // Probe the system-overview state once per scan window, not per pin.
+        // Open on the FIRST high sample (hide fast); require three
+        // consecutive low samples to close (mid-overview redraws dip low
+        // momentarily — re-showing on one would blink during the overview).
+        if (now - lastOverviewProbeTime) >= overviewProbeInterval {
+            lastOverviewProbeTime = now
+            if systemOverviewProbe() {
+                overviewCloseStreak = 0
+                systemOverviewActive = true
+            } else if systemOverviewActive {
+                overviewCloseStreak += 1
+                if overviewCloseStreak >= overviewCloseDebounce {
+                    systemOverviewActive = false
+                    overviewCloseStreak = 0
+                }
+            }
+        }
         for window in Array(pinnedWindows) {
             guard let overlay = overlays[window.id] else {
                 pinnedWindows.remove(window)
@@ -434,43 +519,72 @@ func exitSelectionMode() {
                 lastOcclusionScanTime[window.id] = now
                 var hide: Bool
                 var reason: String
+                var exposed: Bool
                 switch occlusionCheck(currentWindow) {
                 case .exposed:
                     offScreenStreaks[window.id] = 0
-                    hide = true
+                    hide = false
+                    exposed = true
                     reason = "top of stack"
                 case .covered(let why):
                     offScreenStreaks[window.id] = 0
                     hide = false
+                    exposed = false
                     reason = why
                 case .offScreen:
                     let streak = (offScreenStreaks[window.id] ?? 0) + 1
                     offScreenStreaks[window.id] = streak
                     hide = streak >= 3 // ~0.6s sustained — ride out Space transitions
+                    exposed = false
                     reason = "off-screen streak=\(streak)"
                 }
+                // An exposure flip means the source was just raised or
+                // buried — its ACTIVE/INACTIVE rendering changed with it.
+                // Force the next recapture so the overlay matches.
+                let prevExposed = lastOcclusionExposed[window.id]
+                if prevExposed != nil && prevExposed != exposed {
+                    lastRecaptureTime[window.id] = 0
+                }
                 lastOcclusionResult[window.id] = hide
+                lastOcclusionExposed[window.id] = exposed
                 lastOcclusionReason[window.id] = reason
             }
-            let shouldHide = lastOcclusionResult[window.id] ?? false
-            if shouldHide {
-                if !hiddenOverlays.contains(window.id) {
-                    overlay.orderOut(nil)
-                    hiddenOverlays.insert(window.id)
-                }
-                continue
-            } else if hiddenOverlays.contains(window.id) {
-                // Source just became buried — show the overlay, take a fresh
-                // snapshot so it isn't stale from before we hid it.
-                overlay.orderFront(nil)
-                hiddenOverlays.remove(window.id)
-                lastRecaptureTime[window.id] = 0 // force immediate recapture
-            }
+    // ponytail: overlay visibility now only tracks whether the source is
+    // on-screen AT ALL. The exposed/covered distinction no longer hides the
+    // overlay — every covered↔exposed flip used to orderOut/orderFront the
+    // pin, and each flip is visible (snapshot↔real swap: shadow redraw,
+    // tint, edge), so clicking behind (or on) the pin blinked it. The pin
+    // is "always on top": it stays put, pixel-aligned over the real window
+    // when exposed (identical bitmap — no double image) and floating above
+    // covers when buried. Only clicks change behavior with exposure.
+    // EXCEPTION: while Mission Control / App Exposé is up, the overlay
+    // hides — it would otherwise float ABOVE the system overview, showing
+    // a full-size frozen copy over the shrunken real window.
+    let offScreenNow = lastOcclusionResult[window.id] ?? false
+    if offScreenNow || systemOverviewActive {
+        if !hiddenOverlays.contains(window.id) {
+            overlay.orderOut(nil)
+            hiddenOverlays.insert(window.id)
+        }
+        continue
+    } else if hiddenOverlays.contains(window.id) {
+        overlay.orderFrontRegardless()
+        hiddenOverlays.remove(window.id)
+        lastRecaptureTime[window.id] = 0 // force immediate recapture
+    }
 
-            // Not hidden = the pinned window is (at least partly) covered.
-            // Absorb the next click so we re-front the source app instead of
-            // letting the click fall through to the covering app.
-            overlay.setAbsorbsClicks(true)
+    // Re-assert ordering when another app activates: the system
+    // re-evaluates stacking on every app switch and may demote an
+    // inactive app's window below the newly active app's windows.
+    // Handled via NSWorkspace.didActivateApplicationNotification
+    // (see startAppSwitchObserver) — event-driven, not polled.
+
+    // Click handling DOES follow exposure: pass clicks through to the real
+    // window while it's top over its own bounds (normal interaction —
+    // focus, drag, type), absorb them to re-front the source only when
+    // it's buried under another window.
+    let exposedNow = lastOcclusionExposed[window.id] ?? true
+    overlay.setAbsorbsClicks(!exposedNow)
 
             let prevBounds = lastAppliedBounds[window.id]
         let boundsChanged = prevBounds != currentWindow.bounds
@@ -478,8 +592,10 @@ func exitSelectionMode() {
         // identical, so we never need to recapture — just reposition the
         // overlay. Resizing changes content layout, so we recapture there.
         let sizeChanged = boundsChanged && prevBounds != nil && currentWindow.bounds.size != prevBounds!.size
+        let activeUse = (frontmostPID == currentWindow.pid) && (lastOcclusionExposed[window.id] ?? false)
+        let recaptureInterval = activeUse ? activeUseRecaptureInterval : idleRecaptureInterval
         let prevIdleRecapture = lastRecaptureTime[window.id] ?? 0
-        let idleRecaptureDue = (now - prevIdleRecapture) >= idleRecaptureInterval
+        let idleRecaptureDue = (now - prevIdleRecapture) >= recaptureInterval
 
         // Skip everything if nothing changed and we're not due for an
         // idle refresh — keeps the main loop nearly free for an idle pin.
@@ -538,10 +654,12 @@ func exitSelectionMode() {
             // Off-main capture. Snapshot is read-only against the source's
             // CGWindowID, so it's safe to run on a background queue. The
             // bitmap apply hops back to main, where NSImageView lives.
+            // sourceIsFrontmost decides whether the inactive-dimming lift
+            // applies — sampled at enqueue time, close enough to capture.
             let wid = window.id
             let overlayRef = overlay
             captureQueue.async { [weak self] in
-                guard let snapshot = self?.captureSnapshot(of: currentWindow) else { return }
+                guard let snapshot = self?.captureSnapshot(of: currentWindow, sourceIsActive: sourceIsFrontmost) else { return }
                 DispatchQueue.main.async {
                     // Bail if the pin was released while we were capturing.
                     guard self?.overlays[wid] === overlayRef else { return }
@@ -552,11 +670,27 @@ func exitSelectionMode() {
         }
     }
 
+    // Mission Control / App Exposé detection — see the measured signature on
+    // the systemOverviewActive property above.
+    private func systemOverviewProbe() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        var dockCount = 0
+        for dict in list {
+            if (dict[kCGWindowOwnerName as String] as? String) == "Dock" {
+                dockCount += 1
+            }
+        }
+        return dockCount >= 8
+    }
+
     // Occlusion tri-state for a pinned window:
-    //  - .exposed: it's the top-most window over its own bounds → the real
-    //    window is visible, hide the overlay.
-    //  - covered: another on-screen window draws over it (same Space) → show
-    //    the overlay mirror on top. This is the core pin feature.
+    //  - .exposed: it's the top-most window over its own bounds → clicks
+    //    pass through the overlay to the real window.
+    //  - covered: another on-screen window draws over it (same Space) → the
+    //    overlay floats the mirror on top and absorbs clicks (re-fronting
+    //    the source). This is the core pin feature.
     //  - offScreen: not in the on-screen list at all — different Space (e.g.
     //    a fullscreen app active), minimized, or mid-transition. Floating a
     //    frozen snapshot over an unrelated Space reads as a ghost, so the

@@ -19,10 +19,24 @@ class PinOverlayWindow: NSWindow {
         )
         self.isOpaque = false
         self.backgroundColor = .clear
-        // ponytail: no shadow — recompute on every reposition causes ghost trail
-        // during move. Spec said false; the rounded-corner clip is the only edge.
-        self.hasShadow = false
-        self.level = .statusBar + 1 // above all normal windows
+        // The snapshot bitmap ends at the source window's bounds — the real
+        // window's drop shadow is drawn by the window server OUTSIDE those
+        // bounds, so it never makes it into the capture. Without a shadow here
+        // the floating pin reads flat/blended against whatever covers the real
+        // window. The window server derives a shadow from this window's
+        // non-opaque content shape (the rounded snapshot), so the pin keeps a
+        // native window-like edge. Moves go through setFrameOrigin (pure
+        // surface translation), which carries the shadow along instead of
+        // recomputing it — no repeat of the #6 drag-trail artifact.
+        self.hasShadow = true
+        // .floating, NOT statusBar+1: windows above ~level 100 are excluded
+        // from Mission Control's zoom-out and stay frozen full-size ON TOP of
+        // the overview — the pin read as a duplicate window floating over
+        // the grid. At .floating the overlay still sits above every normal
+        // window (level 0), but Mission Control zooms it away together with
+        // the real window — they're pixel-aligned, so they shrink as one and
+        // the pin appears exactly once in the overview.
+        self.level = .floating
         // ponytail: default click-through. A click only needs us when the real
         // pinned window is buried under some other app — then the click would
         // fall straight through to the *covering* app (the bug). When that's the
