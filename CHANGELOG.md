@@ -12,6 +12,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-monitor / Space awareness
 - Migrate from deprecated `CGWindowListCreateImage` to ScreenCaptureKit for forward compatibility with future macOS releases
 
+## [0.4.0] — 2026-08-22
+
+### Fixed
+- **Pin no longer blinks when clicking other windows.** The overlay used to
+  hide whenever the source window was on top and reappear when covered —
+  every click behind the pin flipped that state, visibly swapping between
+  the real window and the snapshot. The pin now stays floating permanently:
+  pixel-aligned over the real window when it is on top, floating above
+  covering windows when it is buried. Clicks pass through to the real
+  window while it is on top and re-front it while it is buried.
+- **Pinned window keeps its drop shadow.** The snapshot ends at the source
+  window's bounds, so the window-server shadow is never in the bitmap; the
+  overlay now draws its own shadow derived from the snapshot's shape.
+- **Pinned window no longer turns gray/washed-out when the source app is
+  inactive.** macOS renders inactive windows dimmed and desaturated, which
+  was baked into every snapshot. Captures taken while inactive now get the
+  measured inverse of that transform applied (saturation ×1.27, brightness
+  −0.02, contrast ×1.10); captures of active windows are left untouched.
+- **Pin can no longer sink below the app you just clicked.** Ordering a
+  window front from a background app is advisory on modern macOS; the
+  overlay now uses `orderFrontRegardless` and re-asserts its position the
+  moment any app activates.
+- **Mission Control / App Exposé no longer shows a full-size frozen copy
+  of the pin over the overview.** The overlay hides while a system
+  overview is open (detected via the Dock's on-screen window count,
+  debounced) and returns after it closes.
+- While you actively work in a pinned window, its snapshot now refreshes
+  at interaction rate (~12×/s) instead of the idle 2×/s.
+
+### Changed
+- Overlay level moved from `statusBar + 1` to `.floating` so Mission
+  Control zooms it together with the real window instead of excluding it.
+
 ## [0.3.1] — 2026-08-12
 
 ### Fixed
