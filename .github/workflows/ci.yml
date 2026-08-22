@@ -1,0 +1,52 @@
+name: CI
+
+# Build-check on every push (and PRs to main): compiles the app, runs the
+# test suite, and uploads the binary as a workflow artifact. Public
+# releases stay tag-driven — see release.yml (push a v* tag).
+
+on:
+  push:
+    branches: ["**"] # any branch push; tag pushes are handled by release.yml
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_NAME: PinTop
+
+jobs:
+  build-test:
+    name: Build & test
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: latest-stable
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Test
+        run: swift test
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.APP_NAME }}-${{ github.sha }}
+          path: .build/release/${{ env.APP_NAME }}
+          retention-days: 14
+          if-no-files-found: error
