@@ -12,6 +12,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-monitor / Space awareness
 - Migrate from deprecated `CGWindowListCreateImage` to ScreenCaptureKit for forward compatibility with future macOS releases
 
+## [0.4.1] — 2026-09-03
+
+### Fixed
+- **Pin no longer grows dark notches at its four corners.** The overlay
+  clipped its content to a hardcoded 10pt corner radius while macOS 26
+  windows curve at ~32pt, leaving the bitmap's transparent corners and the
+  real window's shadow visible past the edge. The corner radius is now
+  measured from the capture's own alpha channel per window (square windows
+  stay square).
+- **Pin edge now matches the native window outline.** macOS 26 draws a 1pt
+  black outline just outside the window bounds and a 1pt gray hairline over
+  its outermost content row — neither exists in the captured bitmap, so the
+  real outline peeked out from behind the pixel-aligned pin as a doubled
+  edge. The pin now extends 1pt past the bounds and draws both rings itself:
+  a filled black rim that absorbs the continuous-corner curve mismatch, and
+  the gray hairline exactly where the real window wears it.
+- **Pin keeps its active appearance when clicked behind (all apps).**
+  Replaces the fixed inactive-dimming constants with a continuous
+  statistical appearance corrector: each recapture is gated on uniform tone
+  shift vs content change, the measured inverse is adopted once two captures
+  agree, and brightening re-anchors. Covers both app deactivation and
+  Chromium-style per-window dimming that happens with the app still
+  frontmost (Figma plugin windows, Slack, VS Code…).
+
 ## [0.4.0] — 2026-08-22
 
 ### Fixed
