@@ -407,7 +407,7 @@ func exitSelectionMode() {
     }
 
     /// Raw snapshot for the initial pin (main thread, once per pin).
-    private func captureRawSnapshot(of windowInfo: WindowInfo) -> (image: NSImage, stats: AppearanceStats)? {
+    private func captureRawSnapshot(of windowInfo: WindowInfo) -> (image: NSImage, stats: AppearanceStats, cornerRadius: CGFloat)? {
         let captureRect = CGRect(
             x: windowInfo.bounds.minX.rounded(),
             y: windowInfo.bounds.minY.rounded(),
@@ -425,13 +425,64 @@ func exitSelectionMode() {
         }
         guard let downsampled = Self.downsample(rawImage) else { return nil }
         let displayScale = Self.backingScale(for: windowInfo.bounds)
+        let radiusPx = Self.measuredCornerRadius(of: rawImage)
         return (
             NSImage(
                 cgImage: rawImage,
                 size: CGSize(width: CGFloat(rawImage.width) / displayScale, height: CGFloat(rawImage.height) / displayScale)
             ),
-            Self.computeStats(downsampled)
+            Self.computeStats(downsampled),
+            (CGFloat(radiusPx) / displayScale).rounded()
         )
+    }
+
+    /// Measure the source window's corner radius from the capture's own
+    /// alpha channel. The window server masks the window's rounded shape out
+    /// of the bitmap, so the first opaque pixel of each scanline traces the
+    /// corner arc — and the inset on the very first row equals the radius.
+    /// The overlay clips its content to this measured radius; a smaller
+    /// hardcoded clip leaves the bitmap's transparent corners + the real
+    /// window's drop shadow visible as dark notches at all four corners
+    /// (macOS 26 windows curve at a larger radius than older releases).
+    /// Returns the radius in PIXELS; 0 when the corner is square.
+    static func measuredCornerRadius(of image: CGImage) -> Int {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0 else { return 0 }
+        // No plausible macOS window rounds past 60pt; scanning 120px covers
+        // it at any backing scale without touching the rest of the bitmap.
+        let scanHeight = min(120, height)
+        var alpha = [UInt8](repeating: 0, count: width * scanHeight)
+        guard let ctx = CGContext(
+            data: &alpha,
+            width: width,
+            height: scanHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(), // ignored for alpha-only contexts
+            bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue
+        ) else { return 0 }
+        // Draw the image pushed below the scan context so only its TOP rows
+        // (the corner) land in the buffer; buffer row 0 = image row 0.
+        ctx.draw(image, in: CGRect(x: 0, y: CGFloat(scanHeight - height), width: CGFloat(width), height: CGFloat(height)))
+
+        @inline(__always) func firstOpaqueInset(_ row: Int) -> Int {
+            let base = row * width
+            for x in 0..<width where alpha[base + x] >= 128 {
+                return x
+            }
+            return width
+        }
+        // Square corner (or fully transparent first row): no rounding.
+        let topInset = firstOpaqueInset(0)
+        guard topInset > 0, topInset < width else { return 0 }
+        // The arc meets the straight edge at the radius depth; cross-check
+        // with a deeper row so one noisy scanline can't skew the fit.
+        for depth in [topInset / 2, topInset] where depth < scanHeight {
+            let inset = firstOpaqueInset(depth)
+            if inset >= topInset { return 0 } // not a convex rounded corner
+        }
+        return topInset
     }
 
     // MARK: Measured appearance correction
@@ -846,7 +897,8 @@ func exitSelectionMode() {
             frame: appKitFrame(for: window.bounds),
             snapshot: captured.image,
             windowID: window.id,
-            pid: window.pid
+            pid: window.pid,
+            cornerRadius: captured.cornerRadius
         )
         // orderFrontRegardless, not orderFront: PinTop is a background app,
         // and ordering front from a NON-active application is only advisory —
@@ -1133,14 +1185,16 @@ func exitSelectionMode() {
                 // display:false the resized backing store stayed unflushed and
                 // the window server kept compositing stale intermediate
                 // surfaces — the stuck full-opacity frames of issue #6.
-                overlay.setFrame(newFrame, display: true)
+                // setContentFrame (not setFrame): the overlay frame is
+                // outlineMargin larger than the source bounds on every side.
+                overlay.setContentFrame(newFrame, display: true)
             } else {
                 // Pure move: setFrameOrigin translates the window's surface
                 // inside the window server without touching the backing store,
                 // so there is no lazily-unpainted region to leave behind along
                 // the movement path (issue #6). Also cheaper than setFrame,
                 // which keeps 60Hz move tracking smooth.
-                overlay.setFrameOrigin(newFrame.origin)
+                overlay.setContentOrigin(newFrame.origin)
             }
             lastAppliedBounds[window.id] = currentWindow.bounds
             if sizeChanged {
