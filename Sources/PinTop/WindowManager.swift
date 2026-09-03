@@ -476,13 +476,17 @@ func exitSelectionMode() {
         // Square corner (or fully transparent first row): no rounding.
         let topInset = firstOpaqueInset(0)
         guard topInset > 0, topInset < width else { return 0 }
-        // The arc meets the straight edge at the radius depth; cross-check
-        // with a deeper row so one noisy scanline can't skew the fit.
-        for depth in [topInset / 2, topInset] where depth < scanHeight {
+        // The half-coverage inset at row 0 (pixel center y=0.5) sits at
+        // inset = R − √(R−¼), i.e. √R short of the true radius — at 27px
+        // measured that's 5px of bias, enough to clip real content. Invert:
+        // R = inset + √(inset) (one Newton step of the fixed point).
+        // Cross-check with a deeper row so one noisy scanline can't skew it.
+        let radius = Int((Double(topInset) + Double(topInset).squareRoot()).rounded())
+        for depth in [topInset / 2, topInset] where depth > 0 && depth < scanHeight {
             let inset = firstOpaqueInset(depth)
             if inset >= topInset { return 0 } // not a convex rounded corner
         }
-        return topInset
+        return radius
     }
 
     // MARK: Measured appearance correction
