@@ -9,6 +9,14 @@ final class HotKeyComboTests: XCTestCase {
         XCTAssertEqual(HotKeyCombo.default.displayText, "⌥⌘P")
     }
 
+    func testDefaultUnpinComboIsOptionCommandU() {
+        XCTAssertEqual(HotKeyCombo.defaultUnpin.keyCode, 32)
+        XCTAssertEqual(HotKeyCombo.defaultUnpin.carbonModifiers, UInt32(cmdKey | optionKey))
+        XCTAssertEqual(HotKeyCombo.defaultUnpin.displayText, "⌥⌘U")
+        // The two defaults must differ so both hotkeys can register (#16).
+        XCTAssertNotEqual(HotKeyCombo.default, HotKeyCombo.defaultUnpin)
+    }
+
     func testStorageStringRoundTrip() {
         let combo = HotKeyCombo(keyCode: 7, carbonModifiers: UInt32(cmdKey)) // ⌘X
         let restored = HotKeyCombo(storageString: combo.storageString)

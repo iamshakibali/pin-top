@@ -13,6 +13,10 @@ struct HotKeyCombo: Equatable {
     /// Default shortcut: ⌥⌘P (P is ANSI keycode 35).
     static let `default` = HotKeyCombo(keyCode: 35, carbonModifiers: UInt32(cmdKey | optionKey))
 
+    /// Default unpin shortcut: ⌥⌘U (U is ANSI keycode 32). Pairs with
+    /// the pin shortcut so both are memorable and conflict-free (#16).
+    static let defaultUnpin = HotKeyCombo(keyCode: 32, carbonModifiers: UInt32(cmdKey | optionKey))
+
     init(keyCode: UInt32, carbonModifiers: UInt32) {
         self.keyCode = keyCode
         self.carbonModifiers = carbonModifiers
@@ -77,13 +81,19 @@ struct HotKeyCombo: Equatable {
 // MARK: - HotKeyManager
 
 /// File-scope trampoline: the Carbon event handler is a C function pointer
-/// and cannot capture context, so the action is stashed here.
-private var currentHotKeyAction: (() -> Void)?
+/// and cannot capture context, so actions are stashed here keyed by hotkey id.
+private var currentHotKeyActions: [UInt32: () -> Void] = [:]
 
-/// Registers one global hotkey via Carbon RegisterEventHotKey — the standard
+/// Registers global hotkeys via Carbon RegisterEventHotKey — the standard
 /// zero-dependency approach (no extra TCC permissions needed).
 final class HotKeyManager {
     static let shared = HotKeyManager()
+
+    /// Which action a registered hotkey fires.
+    enum HotKeyID: UInt32 {
+        case pin = 1
+        case unpin = 2
+    }
 
     enum RegistrationError: Error {
         case registrationFailed(OSStatus)
@@ -92,55 +102,104 @@ final class HotKeyManager {
     /// 'PINT' — matches the hotkey signature the event handler filters on.
     private static let hotKeySignature = OSType(0x50494E54)
 
-    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
     private var eventHandlerRef: EventHandlerRef?
+
+    /// Launch-time wiring: store both actions and register both combos (#16).
+    /// Pass nil for a combo to leave that hotkey unregistered.
+    func setCombos(
+        pin pinCombo: HotKeyCombo?,
+        unpin unpinCombo: HotKeyCombo?,
+        onPin pinAction: @escaping () -> Void,
+        onUnpin unpinAction: @escaping () -> Void
+    ) {
+        currentHotKeyActions[HotKeyID.pin.rawValue] = pinAction
+        currentHotKeyActions[HotKeyID.unpin.rawValue] = unpinAction
+        unregisterAll()
+        if let pinCombo {
+            let status = register(pinCombo, id: .pin)
+            if status != noErr {
+                NSLog("[PinTop] pin hotkey registration failed with OSStatus \(status)")
+            }
+        }
+        if let unpinCombo {
+            let status = register(unpinCombo, id: .unpin)
+            if status != noErr {
+                NSLog("[PinTop] unpin hotkey registration failed with OSStatus \(status)")
+            }
+        }
+    }
 
     /// Launch-time wiring: store the action and register `combo`.
     /// Pass nil to unregister (teardown only — the UI always holds a combo).
     func setCombo(_ combo: HotKeyCombo?, fires action: @escaping () -> Void) {
-        currentHotKeyAction = action
-        unregister()
+        currentHotKeyActions[HotKeyID.pin.rawValue] = action
+        unregister(id: .pin)
         guard let combo else { return }
-        let status = register(combo)
+        let status = register(combo, id: .pin)
         if status != noErr {
             NSLog("[PinTop] hotkey registration failed with OSStatus \(status)")
         }
     }
 
-    /// Settings-time re-registration; the action set by setCombo is kept.
-    /// On failure the previous registration is left untouched.
-    func updateCombo(_ combo: HotKeyCombo) throws {
-        let status = register(combo)
+    /// Settings-time re-registration for the given hotkey; the actions set by
+    /// setCombo(s) are kept. On failure the previous registration is left
+    /// untouched. Throws when the candidate duplicates the *other* hotkey so
+    /// the two can never shadow each other.
+    func updateCombo(_ combo: HotKeyCombo, for id: HotKeyID = .pin) throws {
+        if combo == comboForOtherHotKey(than: id) {
+            throw RegistrationError.registrationFailed(OSStatus(eventAlreadyPostedErr))
+        }
+        let status = register(combo, id: id)
         if status != noErr {
             throw RegistrationError.registrationFailed(status)
+        }
+    }
+
+    /// The persisted combo currently backing the *other* hotkey, used to
+    /// reject duplicates before touching Carbon registration.
+    private func comboForOtherHotKey(than id: HotKeyID) -> HotKeyCombo? {
+        switch id {
+        case .pin: SettingsStore.shared.unpinHotkey
+        case .unpin: SettingsStore.shared.hotkey
         }
     }
 
     // Register the new hotkey BEFORE dropping the old one, so a failure never
     // leaves us with nothing registered.
     @discardableResult
-    private func register(_ combo: HotKeyCombo) -> OSStatus {
+    private func register(_ combo: HotKeyCombo, id: HotKeyID) -> OSStatus {
         installEventHandlerIfNeeded()
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(
             combo.keyCode,
             combo.carbonModifiers,
-            EventHotKeyID(signature: Self.hotKeySignature, id: 1),
+            EventHotKeyID(signature: Self.hotKeySignature, id: id.rawValue),
             GetApplicationEventTarget(),
             0,
             &ref
         )
         guard status == noErr, let ref else { return status }
-        unregister()
-        hotKeyRef = ref
+        unregister(id: id)
+        hotKeyRefs[id.rawValue] = ref
         return noErr
     }
 
-    private func unregister() {
-        if let hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
+    private func unregister(id: HotKeyID) {
+        if let ref = hotKeyRefs.removeValue(forKey: id.rawValue) {
+            UnregisterEventHotKey(ref)
         }
-        hotKeyRef = nil
+    }
+
+    private func unregisterAll() {
+        for (_, ref) in hotKeyRefs {
+            UnregisterEventHotKey(ref)
+        }
+        hotKeyRefs.removeAll()
+    }
+
+    private func unregister() {
+        unregisterAll()
     }
 
     private func installEventHandlerIfNeeded() {
@@ -162,7 +221,8 @@ final class HotKeyManager {
                 &hotKeyID
             )
             if hotKeyID.signature == HotKeyManager.hotKeySignature {
-                DispatchQueue.main.async { currentHotKeyAction?() }
+                let id = hotKeyID.id
+                DispatchQueue.main.async { currentHotKeyActions[id]?() }
             }
             return noErr
         }, 1, &eventType, nil, &eventHandlerRef)

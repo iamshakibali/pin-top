@@ -29,6 +29,17 @@ final class SettingsStore {
         set { defaults.set(newValue.storageString, forKey: "pinHotkey") }
     }
 
+    /// Unpin-all shortcut (#16). Nil = never customized: returns
+    /// `.defaultUnpin` (⌥⌘U) so existing installs pick up the new hotkey.
+    var unpinHotkey: HotKeyCombo {
+        get {
+            guard let raw = defaults.string(forKey: "unpinHotkey"),
+                  let combo = HotKeyCombo(storageString: raw) else { return .defaultUnpin }
+            return combo
+        }
+        set { defaults.set(newValue.storageString, forKey: "unpinHotkey") }
+    }
+
     var lastAutoUpdateCheck: Date {
         get { defaults.object(forKey: "lastAutoUpdateCheck") as? Date ?? .distantPast }
         set { defaults.set(newValue, forKey: "lastAutoUpdateCheck") }
