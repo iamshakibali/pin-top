@@ -36,6 +36,24 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(SettingsStore(defaults: suite).hotkey, combo)
     }
 
+    func testUnpinHotkeyDefaultsToOptionCommandU() {
+        let store = SettingsStore(defaults: suite)
+        XCTAssertEqual(store.unpinHotkey, .defaultUnpin)
+    }
+
+    func testUnpinHotkeyPersistsRoundTrip() {
+        let store = SettingsStore(defaults: suite)
+        let combo = HotKeyCombo(keyCode: 7, carbonModifiers: UInt32(cmdKey)) // ⌘X
+        store.unpinHotkey = combo
+        XCTAssertEqual(SettingsStore(defaults: suite).unpinHotkey, combo)
+    }
+
+    func testCorruptUnpinHotkeyStringFallsBackToDefault() {
+        suite.set("garbage", forKey: "unpinHotkey")
+        let store = SettingsStore(defaults: suite)
+        XCTAssertEqual(store.unpinHotkey, .defaultUnpin)
+    }
+
     func testCorruptHotkeyStringFallsBackToDefault() {
         suite.set("garbage", forKey: "pinHotkey")
         let store = SettingsStore(defaults: suite)

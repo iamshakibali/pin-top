@@ -12,7 +12,7 @@ class SettingsWindow: NSWindow {
     )
 
     init() {
-        let windowSize = NSSize(width: 360, height: 372)
+        let windowSize = NSSize(width: 360, height: 404)
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 800, height: 600)
         let origin = NSPoint(
             x: screenFrame.midX - windowSize.width / 2,
@@ -47,37 +47,37 @@ class SettingsWindow: NSWindow {
 
         // MARK: General
 
-        contentView.addSubview(makeCaption("General", y: 344))
+        contentView.addSubview(makeCaption("General", y: 376))
 
         loginItemCheckbox.state = SMAppService.mainApp.status == .enabled ? .on : .off
         loginItemCheckbox.target = self
         loginItemCheckbox.action = #selector(toggleLoginItem)
-        loginItemCheckbox.frame = NSRect(x: 24, y: 314, width: 312, height: 22)
+        loginItemCheckbox.frame = NSRect(x: 24, y: 346, width: 312, height: 22)
         contentView.addSubview(loginItemCheckbox)
 
         autoUpdateCheckbox.state = SettingsStore.shared.autoCheckUpdates ? .on : .off
         autoUpdateCheckbox.target = self
         autoUpdateCheckbox.action = #selector(toggleAutoUpdate)
-        autoUpdateCheckbox.frame = NSRect(x: 24, y: 288, width: 312, height: 22)
+        autoUpdateCheckbox.frame = NSRect(x: 24, y: 320, width: 312, height: 22)
         contentView.addSubview(autoUpdateCheckbox)
 
-        // MARK: Shortcut
+        // MARK: Shortcuts
 
-        contentView.addSubview(makeCaption("Shortcut", y: 252))
+        contentView.addSubview(makeCaption("Shortcuts", y: 284))
 
-        let shortcutLabel = NSTextField(labelWithString: "Toggle Pin Mode")
-        shortcutLabel.font = .systemFont(ofSize: 13)
-        shortcutLabel.frame = NSRect(x: 24, y: 225, width: 160, height: 17)
-        contentView.addSubview(shortcutLabel)
+        let pinLabel = NSTextField(labelWithString: "Toggle Pin Mode")
+        pinLabel.font = .systemFont(ofSize: 13)
+        pinLabel.frame = NSRect(x: 24, y: 257, width: 160, height: 17)
+        contentView.addSubview(pinLabel)
 
         let recorder = HotKeyRecorderControl(combo: SettingsStore.shared.hotkey)
-        recorder.frame = NSRect(x: 190, y: 218, width: 146, height: 28)
+        recorder.frame = NSRect(x: 190, y: 250, width: 146, height: 28)
         recorder.onComboChanged = { [weak self, weak recorder] combo in
             do {
                 // Register first, persist only on success. On failure the
                 // manager keeps the old combo registered, and the store was
                 // never touched — just reset the display.
-                try HotKeyManager.shared.updateCombo(combo)
+                try HotKeyManager.shared.updateCombo(combo, for: .pin)
                 SettingsStore.shared.hotkey = combo
             } catch {
                 recorder?.setCombo(SettingsStore.shared.hotkey)
@@ -87,6 +87,26 @@ class SettingsWindow: NSWindow {
             }
         }
         contentView.addSubview(recorder)
+
+        let unpinLabel = NSTextField(labelWithString: "Unpin All")
+        unpinLabel.font = .systemFont(ofSize: 13)
+        unpinLabel.frame = NSRect(x: 24, y: 221, width: 160, height: 17)
+        contentView.addSubview(unpinLabel)
+
+        let unpinRecorder = HotKeyRecorderControl(combo: SettingsStore.shared.unpinHotkey)
+        unpinRecorder.frame = NSRect(x: 190, y: 214, width: 146, height: 28)
+        unpinRecorder.onComboChanged = { [weak self, weak unpinRecorder] combo in
+            do {
+                try HotKeyManager.shared.updateCombo(combo, for: .unpin)
+                SettingsStore.shared.unpinHotkey = combo
+            } catch {
+                unpinRecorder?.setCombo(SettingsStore.shared.unpinHotkey)
+                self?.showStatusError(
+                    "Couldn't register shortcut — it may duplicate the pin shortcut or conflict with macOS."
+                )
+            }
+        }
+        contentView.addSubview(unpinRecorder)
 
         // MARK: About
 

@@ -167,9 +167,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func registerHotkey() {
-        HotKeyManager.shared.setCombo(SettingsStore.shared.hotkey) { [weak self] in
-            self?.toggleSelectionMode()
+        HotKeyManager.shared.setCombos(
+            pin: SettingsStore.shared.hotkey,
+            unpin: SettingsStore.shared.unpinHotkey,
+            onPin: { [weak self] in self?.toggleSelectionMode() },
+            onUnpin: { [weak self] in self?.unpinViaHotkey() }
+        )
+    }
+
+    /// Unpin hotkey (#16): cancels an active pin-selection first; otherwise
+    /// clears every pinned window, mirroring "Clear All".
+    func unpinViaHotkey() {
+        if !selectionOverlayWindows.isEmpty {
+            hideSelectionOverlay()
+            windowManager?.exitSelectionMode()
+            return
         }
+        windowManager?.unpinAll()
+        DispatchQueue.main.async { [weak self] in self?.updateMenu() }
     }
 
     private func maybeAutoCheckUpdates() {
