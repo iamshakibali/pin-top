@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-monitor / Space awareness
 - Migrate from deprecated `CGWindowListCreateImage` to ScreenCaptureKit for forward compatibility with future macOS releases
 
+## [0.5.0] — 2026-10-02
+
+### Added
+- **Unpin-all hotkey (#16).** A second global shortcut (default ⌥⌘U)
+  sits alongside the pin hotkey (⌥⌘P): it cancels an active pin-selection
+  first, otherwise clears every pinned window like "Clear All". Both
+  shortcuts are re-bindable in Settings → Shortcuts, with duplicate /
+  conflict guards.
+
 ## [0.4.1] — 2026-09-03
 
 ### Fixed
