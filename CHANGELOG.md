@@ -12,6 +12,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-monitor / Space awareness
 - Migrate from deprecated `CGWindowListCreateImage` to ScreenCaptureKit for forward compatibility with future macOS releases
 
+## [0.6.0 "Golden Gate"] — 2026-10-03
+
+The macOS 27 "Golden Gate" release. Mission Control moved its entire
+compositor surface, which broke the overlay hiding on the new OS — this
+release adapts the pin to both generations.
+
+### Fixed
+- **Pinned windows no longer ghost in Mission Control on macOS 27.** The
+  overlay hid by watching the Dock's window count, a signature that Apple
+  retired when the exposé surface moved to `WindowManager`
+  (`com.apple.WindowManager`, layer 19). The probe now matches the exposé
+  surface per generation — Dock layer-18 on Tahoe and earlier, WindowManager
+  layer-19 on 27+ — each checked as pid + layer + full-screen bounds, with
+  the old Dock-count burst kept as a fallback. Self-selecting across
+  releases, no version switch.
+- **Overlays hide on the first frame of the Mission Control animation.**
+  `com.apple.expose.awake` / `.exit` are observed on the distributed
+  notification center as a hide-fast path, so the pin is gone the moment the
+  overview starts instead of a probe interval later.
+- **The pin is already on top when you land from Mission Control.** On
+  `.exit` every overlay re-shows synchronously via `orderFrontRegardless`,
+  so picking any window in the overview still leaves the pin floating above
+  it — no "picked window first, pin arrives late" beat. A source that left
+  the screen (other Space / minimized) is deliberately left hidden so the
+  refresh loop keeps ownership of it.
+
+### Added
+- `OverviewProbeTests` — locks the exposé-surface geometry gate (rejects
+  small windows, Spaces strips, and offset full-size windows; accepts
+  full-screen surfaces and one-pixel-off mid-animation samples) so a future
+  macOS layer reshuffle fails loudly in CI instead of ghosting.
+
 ## [0.5.0] — 2026-10-02
 
 ### Added
