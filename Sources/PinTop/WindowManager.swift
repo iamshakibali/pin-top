@@ -172,12 +172,19 @@ class WindowManager: ObservableObject {
     // float ABOVE the overview UI, showing a full-size frozen copy over the
     // shrunken real window — reads as a duplicated window. The real window
     // already represents the pin in the overview grid.
-    // Signature measured on this machine (macOS 26): the overview's UI is
-    // owned by the Dock, and while it is up the Dock's on-screen window
-    // count bursts from a resting 2-4 to 14-15. (The classic owner="Dock" +
-    // layer≥1000 signature does NOT match — those windows sit at other
-    // layers.) Mid-overview redraws can momentarily read low again, so
-    // re-showing is debounced by consecutive samples.
+    //
+    // The classic fingerprint is the Dock-owned exposé surface at layer 18,
+    // screen-sized at (0,0) while Mission Control is up (macOS Tahoe and
+    // earlier; see usagimaru/DetectMissionControl.swift). On newer macOS the
+    // surface moved to WindowManager (com.apple.WindowManager) at layer 19 —
+    // one screen-sized window per display (oomol-lab/CloseUp#macOS-27 fix).
+    // We check BOTH pid+layer-exact signals (self-selecting across releases,
+    // no version switch) and keep the old Dock-window-count burst as a final
+    // fallback. The AXExpose* distributed notifications the overview also
+    // posts are observed below as a hide-fast trigger: the probe catches
+    // changes we miss, the notifications catch them with sub-frame latency.
+    // Mid-overview redraws can momentarily read low again, so re-showing is
+    // debounced by consecutive samples.
     private var systemOverviewActive = false
     private var lastOverviewProbeTime: TimeInterval = 0
     private var overviewCloseStreak = 0
@@ -187,8 +194,11 @@ class WindowManager: ObservableObject {
     // ~2ms; at 30ms cadence that's a few percent of a core while pins exist.
     private let overviewProbeInterval: TimeInterval = 0.03
     // After the overview closes, hold the overlay hidden this many samples
-    // (~300ms) so it never pops back mid exit-animation.
-    private let overviewCloseDebounce = 10
+    // so a mid-animation low probe can't pop it back over the overview.
+    // (The .exit notification re-shows synchronously — this debounce only
+    // guards the probe path when the notification is missed.)
+    private let overviewCloseDebounce = 4
+    private var exposeObservers: [NSObjectProtocol] = []
     private let occlusionScanInterval: TimeInterval = 0.2
     // Consecutive scans finding the window absent from the on-screen list
     // (other Space / minimized) vs a momentary Space-transition blip.
@@ -243,12 +253,16 @@ class WindowManager: ObservableObject {
     private init() {
         startRefreshTimer()
         startAppSwitchObserver()
+        startExposeObservers()
     }
 
     deinit {
         refreshTimer?.cancel()
         if let observer = appSwitchObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        for observer in exposeObservers {
+            DistributedNotificationCenter.default().removeObserver(observer)
         }
     }
 
@@ -266,6 +280,65 @@ class WindowManager: ObservableObject {
             for (_, overlay) in visible {
                 overlay.orderFrontRegardless()
             }
+        }
+    }
+
+    // Mission Control posts com.apple.expose.awake / .exit on the
+    // DISTRIBUTED notification center as it enters/exits (this is the same
+    // signal AltTab and other overlay apps use as their hide-fast path).
+    // Treat awake as "overview open NOW": set systemOverviewActive and hide
+    // every visible overlay synchronously, skipping the probe latency.
+    // On exit, re-show every overlay SYNCHRONOUSLY: Mission Control raises
+    // the picked window as it exits, and the pin contract is "always on top
+    // no matter which window you picked" — the pin must already be floating
+    // when the desktop lands, not arrive a beat later via the debounced
+    // probe. If the overview is somehow still up (exit fired at animation
+    // start), the probe below re-hides on the next tick, so an eager
+    // re-show can never strand the pin over the overview.
+    private func startExposeObservers() {
+        let center = DistributedNotificationCenter.default()
+        let awake = center.addObserver(
+            forName: NSNotification.Name("com.apple.expose.awake"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.systemOverviewActive = true
+            self.overviewCloseStreak = 0
+            self.hideAllOverlaysForOverview()
+        }
+        exposeObservers.append(awake)
+        let exit = center.addObserver(
+            forName: NSNotification.Name("com.apple.expose.exit"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.systemOverviewActive = false
+            self.overviewCloseStreak = 0
+            self.lastOverviewProbeTime = Date().timeIntervalSinceReferenceDate
+            self.showAllOverlaysAfterOverview()
+        }
+        exposeObservers.append(exit)
+    }
+
+    private func showAllOverlaysAfterOverview() {
+        // Re-show unconditionally, but never for a source that left the
+        // screen while the overview was up (other Space / minimized — the
+        // refresh loop owns those via offScreenStreaks and would fight us).
+        for (id, overlay) in overlays where hiddenOverlays.contains(id) {
+            if lastOcclusionResult[id] ?? false { continue }
+            overlay.orderFrontRegardless()
+            hiddenOverlays.remove(id)
+            lastRecaptureTime[id] = 0 // stale snapshot after the animation
+        }
+    }
+
+    private func hideAllOverlaysForOverview() {
+        for (id, overlay) in overlays where !hiddenOverlays.contains(id) {
+            overlay.orderOut(nil)
+            hiddenOverlays.insert(id)
+            lastRecaptureTime[id] = 0 // stale snapshot after the animation
         }
     }
 
@@ -1277,12 +1350,40 @@ func exitSelectionMode() {
         }
     }
 
-    // Mission Control / App Exposé detection — see the measured signature on
-    // the systemOverviewActive property above.
+    // Mission Control / App Exposé detection — see the systemOverviewActive
+    // property above. Exact per-generation fingerprint, evaluated in one
+    // pass over a single window-list snapshot:
+    //  - macOS Tahoe and earlier: Dock-owned layer-18 exposé surface,
+    //    screen-sized at (0,0) (usagimaru/DetectMissionControl.swift).
+    //  - newer macOS: WindowManager (com.apple.WindowManager) owns one
+    //    screen-sized layer-19 window per display (oomol-lab/CloseUp macOS-27
+    //    fix). WindowManager exists since Ventura but owns only offscreen
+    //    (negative-layer) windows while MC is closed, so its layer-19
+    //    window is as tight a fingerprint as the Dock's layer-18 was.
+    //  - fallback: the old Dock window-count burst — kept because it caught
+    //    overviews on this machine even when the layer naming shifted.
+    // Sharing state is deliberately NOT checked: the Dock surface reports
+    // kCGWindowSharingState=false and WindowManager's reports true, so a
+    // sharing filter would silence exactly one generation. Bounds are checked
+    // leniently (within 2pt of full-screen) because pre-scaling mid-animation
+    // samples can be a pixel off.
     private func systemOverviewProbe() -> Bool {
         guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
+        let dockPID = dockProcessID()
+        let windowManagerPID = windowManagerProcessID()
+        for dict in list {
+            let pid = dict[kCGWindowOwnerPID as String] as? pid_t
+            let layer = dict[kCGWindowLayer as String] as? Int
+            guard let pid, let layer else { continue }
+            let isDockSurface = dockPID != nil && pid == dockPID && layer == 18
+            let isWindowManagerSurface = windowManagerPID != nil && pid == windowManagerPID && layer == 19
+            guard isDockSurface || isWindowManagerSurface else { continue }
+            if Self.isFullScreenBounds(dict) { return true }
+        }
+        // Fallback: resting Dock owns 2-4 on-screen windows; the overview UI
+        // bursts it to 8+.
         var dockCount = 0
         for dict in list {
             if (dict[kCGWindowOwnerName as String] as? String) == "Dock" {
@@ -1290,6 +1391,44 @@ func exitSelectionMode() {
             }
         }
         return dockCount >= 8
+    }
+
+    /// PID of the Dock, or nil while it can't be resolved (probe just skips
+    /// the Dock-surface match and falls through to the other signals).
+    private func dockProcessID() -> pid_t? {
+        NSWorkspace.shared.runningApplications.first {
+            $0.bundleIdentifier == "com.apple.dock"
+        }?.processIdentifier
+    }
+
+    /// PID of WindowManager (Stage Manager / exposé compositor), or nil on
+    /// releases where it doesn't exist.
+    private func windowManagerProcessID() -> pid_t? {
+        NSWorkspace.shared.runningApplications.first {
+            $0.bundleIdentifier == "com.apple.WindowManager"
+        }?.processIdentifier
+    }
+
+    /// Whether the window-list entry covers a full screen (within 2pt).
+    /// Pure function over the bounds dict so the leniency is unit-testable.
+    static func isFullScreenBounds(_ dict: [String: Any]) -> Bool {
+        guard
+            let bounds = dict[kCGWindowBounds as String] as? [String: CGFloat],
+            let x = bounds["X"], let y = bounds["Y"],
+            let w = bounds["Width"], let h = bounds["Height"]
+        else { return false }
+        for screen in NSScreen.screens {
+            let frame = screen.frame
+            // CG window-list bounds use top-left origin; AppKit frames use
+            // bottom-left — compare sizes, and require a near-zero origin
+            // (top-left (0,0) reads as (0, menubar-offset) in CG space).
+            if abs(w - frame.width) <= 2 && abs(h - frame.height) <= 2
+                && abs(x) <= 2 && abs(y) <= 60
+            {
+                return true
+            }
+        }
+        return false
     }
 
     // Occlusion tri-state for a pinned window:
