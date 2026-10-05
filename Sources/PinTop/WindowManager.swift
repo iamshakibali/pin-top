@@ -208,6 +208,23 @@ class WindowManager: ObservableObject {
     private var windowMissStreaks: [CGWindowID: Int] = [:]
     private let maxWindowMissTicks = 45 // ~0.75s at 16ms per tick
 
+    // Drag-ghost suppression: while the user drags an EXPOSED pinned window,
+    // the overlay (a frozen snapshot moved by polling) trails the real
+    // window by one or more frames — on screen that reads as a lagging ghost
+    // copy of the window. While the window is exposed the overlay adds
+    // nothing anyway (it sits pixel-aligned over identical live content),
+    // so the overlay hides for the duration of the move and restores once
+    // the bounds settle. Covered windows can't be dragged by the user (the
+    // overlay absorbs clicks there), so mirror-following is untouched.
+    private var dragHiddenOverlays: Set<CGWindowID> = []
+    // Consecutive ticks WITHOUT a bounds change — the settle signal that
+    // ends a drag and re-shows the overlay.
+    private var moveSettleStreaks: [CGWindowID: Int] = [:]
+    // Consecutive ticks where the overlay window was missing from the
+    // on-screen window list or wearing the wrong level (system demotion) —
+    // one tick can be a transient ordering blip.
+    private var demoteStreaks: [CGWindowID: Int] = [:]
+
     // MARK: Appearance corrector state (per pinned window)
     // Apps restyle their windows when they stop being the key/focused
     // window — the system dims chrome on app deactivation, and Chromium/
@@ -276,7 +293,9 @@ class WindowManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            let visible = self.overlays.filter { !self.hiddenOverlays.contains($0.key) }
+            let visible = self.overlays.filter {
+                !self.hiddenOverlays.contains($0.key) && !self.dragHiddenOverlays.contains($0.key)
+            }
             for (_, overlay) in visible {
                 overlay.orderFrontRegardless()
             }
@@ -1028,6 +1047,9 @@ func exitSelectionMode() {
         lastOcclusionReason.removeAll()
         offScreenStreaks.removeAll()
         windowMissStreaks.removeAll()
+        dragHiddenOverlays.removeAll()
+        moveSettleStreaks.removeAll()
+        demoteStreaks.removeAll()
         anchorStats.removeAll()
         activeFit.removeAll()
         pendingFit.removeAll()
@@ -1057,6 +1079,9 @@ func exitSelectionMode() {
         lastOcclusionReason.removeValue(forKey: windowID)
         offScreenStreaks.removeValue(forKey: windowID)
         windowMissStreaks.removeValue(forKey: windowID)
+        dragHiddenOverlays.remove(windowID)
+        moveSettleStreaks.removeValue(forKey: windowID)
+        demoteStreaks.removeValue(forKey: windowID)
         anchorStats.removeValue(forKey: windowID)
         activeFit.removeValue(forKey: windowID)
         pendingFit.removeValue(forKey: windowID)
@@ -1195,6 +1220,33 @@ func exitSelectionMode() {
                 lastOcclusionResult[window.id] = hide
                 lastOcclusionExposed[window.id] = exposed
                 lastOcclusionReason[window.id] = reason
+
+                // Defensive re-front: macOS demotes an inactive app's
+                // windows below the active app's on its own schedule — and
+                // does so at moments the app-activation notification
+                // doesn't cover (Space transitions, fullscreen enter/exit,
+                // mid-drag on recent releases). A demoted overlay renders
+                // BELOW the windows it must float over: invisible while the
+                // source is exposed, and reading as a stale frozen copy
+                // beside it while the source moves. Verify the overlay's
+                // own window is on-screen at the pin level and re-front on
+                // detection; a one-tick ordering blip rides out on a
+                // streak. Only for overlays we intend to show — the
+                // overview/off-screen/drag hides below order out on purpose.
+                if !hiddenOverlays.contains(window.id), !dragHiddenOverlays.contains(window.id), !hide {
+                    let overlayList = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(overlay.windowNumber)) as? [[String: Any]]
+                    let overlayInfo = overlayList?.first
+                    let onscreen = overlayInfo?[kCGWindowIsOnscreen as String] as? Bool ?? false
+                    let layer = overlayInfo?[kCGWindowLayer as String] as? Int ?? -1
+                    let demoted = !onscreen || layer != overlay.level.rawValue
+                    let streak = demoted ? (demoteStreaks[window.id] ?? 0) + 1 : 0
+                    demoteStreaks[window.id] = streak
+                    if streak >= 2 {
+                        demoteStreaks[window.id] = nil
+                        overlay.orderFrontRegardless()
+                        lastRecaptureTime[window.id] = 0 // may have been stale for a while
+                    }
+                }
             }
     // ponytail: overlay visibility now only tracks whether the source is
     // on-screen AT ALL. The exposed/covered distinction no longer hides the
@@ -1213,10 +1265,12 @@ func exitSelectionMode() {
             overlay.orderOut(nil)
             hiddenOverlays.insert(window.id)
         }
+        dragHiddenOverlays.remove(window.id)
         continue
     } else if hiddenOverlays.contains(window.id) {
         overlay.orderFrontRegardless()
         hiddenOverlays.remove(window.id)
+        dragHiddenOverlays.remove(window.id)
         lastRecaptureTime[window.id] = 0 // force immediate recapture
     }
 
@@ -1246,7 +1300,36 @@ func exitSelectionMode() {
 
         // Skip everything if nothing changed and we're not due for an
         // idle refresh — keeps the main loop nearly free for an idle pin.
-        guard boundsChanged || idleRecaptureDue else { continue }
+        // A drag-hidden overlay must also wake: its settle check below
+        // restores the overlay once the bounds stop changing.
+        guard boundsChanged || idleRecaptureDue || dragHiddenOverlays.contains(window.id) else { continue }
+
+        // Drag-ghost suppression (see dragHiddenOverlays): while an EXPOSED
+        // pinned window is actively moving, hide its overlay — the polling
+        // follower can never keep pace with the live window, and the frozen
+        // snapshot trailing a frame or more behind reads as a lagging ghost.
+        // The overlay is pixel-aligned over identical live content while
+        // exposed, so hiding it changes nothing visually until the drag
+        // ends; at settle it comes back aligned (and a fresh recapture is
+        // forced, so the snapshot can't be stale). Covered sources keep the
+        // mirror-follow behavior — their overlay is the only visible
+        // representation, and a programmatic move of a covered window has
+        // no live window to ghost against.
+        let settledTicks = boundsChanged ? 0 : (moveSettleStreaks[window.id] ?? 0) + 1
+        moveSettleStreaks[window.id] = settledTicks
+        if exposedNow && boundsChanged && !sizeChanged {
+            if !dragHiddenOverlays.contains(window.id) {
+                dragHiddenOverlays.insert(window.id)
+                overlay.orderOut(nil)
+            }
+        } else if dragHiddenOverlays.contains(window.id), settledTicks >= 2 {
+            dragHiddenOverlays.remove(window.id)
+            moveSettleStreaks[window.id] = nil
+            if !hiddenOverlays.contains(window.id) {
+                overlay.orderFrontRegardless()
+                lastRecaptureTime[window.id] = 0 // fresh snapshot at rest
+            }
+        }
 
         let prevResizeRecapture = lastResizeRecaptureTime[window.id] ?? 0
         let resizeRecaptureDue = (now - prevResizeRecapture) >= resizeRecaptureInterval
