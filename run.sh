@@ -30,9 +30,20 @@ fi
 if [ -n "$SIGNING_IDENTITY" ]; then
   codesign --force --sign "$SIGNING_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP"
 else
-  echo "Warning: no signing identity found; Screen Recording approval may reset after source changes." >&2
-  echo "  Create a self-signed one: see setup-signing.sh" >&2
-  codesign --force --sign - "$APP"
+  # Ad-hoc (identity-less) signing bakes a new CDHash into every build, and
+  # TCC tracks Screen Recording by that identity — so every rebuild silently
+  # invalidated the grant and PinTop started re-prompting for a permission
+  # that was still toggled ON in System Settings. Fail loudly instead; the
+  # stable identity is one command away.
+  echo "ERROR: no signing identity found (looked for 'Apple Development:*' and 'Pin Top Local Signing')." >&2
+  echo "Signing ad-hoc would reset the Screen Recording grant on this very build." >&2
+  echo "Create the stable identity once:  ./setup-signing.sh" >&2
+  echo "To build anyway (permissions WILL reset):  FORCE_ADHOC=1 ./run.sh" >&2
+  if [ "${FORCE_ADHOC:-0}" = "1" ]; then
+    codesign --force --sign - "$APP"
+  else
+    exit 1
+  fi
 fi
 open "$APP"
 echo "Built and opened $APP"

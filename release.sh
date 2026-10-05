@@ -42,8 +42,18 @@ if [ -n "$SIGNING_IDENTITY" ]; then
   echo "==> Signing with: $SIGNING_IDENTITY"
   codesign --force --sign "$SIGNING_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP"
 else
-  echo "Warning: no signing identity; ad-hoc signing. Gatekeeper will warn on first launch (right-click → Open)." >&2
-  codesign --force --sign - "$APP"
+  # Ad-hoc signing bakes a new CDHash into every build and TCC tracks the
+  # Screen Recording grant by that identity — silently shipping ad-hoc made
+  # every local beta reset its permission grant. Fail loudly instead.
+  echo "ERROR: no signing identity found (looked for 'Apple Development:*' and 'Pin Top Local Signing')." >&2
+  echo "Create the stable identity once:  ./setup-signing.sh" >&2
+  echo "To build anyway (permissions WILL reset):  FORCE_ADHOC=1 ./release.sh" >&2
+  if [ "${FORCE_ADHOC:-0}" = "1" ]; then
+    echo "==> Ad-hoc signing (FORCE_ADHOC=1). Gatekeeper will warn on first launch (right-click → Open)." >&2
+    codesign --force --sign - "$APP"
+  else
+    exit 1
+  fi
 fi
 
 # Verify the bundle.
