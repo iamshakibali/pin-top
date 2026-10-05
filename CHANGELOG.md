@@ -12,6 +12,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-monitor / Space awareness
 - Migrate from deprecated `CGWindowListCreateImage` to ScreenCaptureKit for forward compatibility with future macOS releases
 
+## [0.6.1] — 2026-10-05
+
+Drag-ghosting and permission-stability fixes.
+
+### Fixed
+- **Dragging a pinned window no longer trails a lagging ghost copy.** The
+  overlay is a frozen snapshot moved by polling, so while the real window
+  was being dragged it followed a frame or more behind — on screen that
+  read as a lagging duplicate of the window. While the source is exposed
+  the overlay sits pixel-aligned over identical live content and adds
+  nothing, so it now hides for the duration of the drag and restores the
+  moment the bounds settle, with a forced fresh capture so the restored
+  snapshot can't be stale. Covered windows keep the mirror-follow behavior
+  (their overlay is the only visible representation of the pin).
+- **Overlays no longer go stale after macOS demotes them.** The system
+  demotes an inactive app's windows below the active app's at moments the
+  app-activation notification doesn't cover (Space transitions, fullscreen
+  enter/exit, mid-drag on recent releases); a demoted overlay rendered
+  below the windows it should float over — invisible while the source was
+  exposed, and reading as a frozen ghost copy beside it while it moved.
+  Every 0.2s the overlay now verifies it is on-screen at the floating
+  level and re-fronts itself when it isn't.
+- **Local rebuilds no longer silently reset the Screen Recording grant.**
+  When no signing identity was resolvable, `run.sh`/`release.sh` fell back
+  to ad-hoc signing — a new CDHash per build, which invalidated the TCC
+  grant on every rebuild while the System Settings toggle stayed on (the
+  "keeps asking for a permission that is already granted" loop). Both
+  scripts now fail with instructions instead; `FORCE_ADHOC=1` overrides.
+
 ## [0.6.0 "Golden Gate"] — 2026-10-03
 
 The macOS 27 "Golden Gate" release. Mission Control moved its entire
