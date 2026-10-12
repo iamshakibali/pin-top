@@ -297,7 +297,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hideSelectionOverlay()
         guard let wm = windowManager else { return }
         for screen in NSScreen.screens {
-            let overlay = SelectionOverlayWindow(screen: screen) { [weak self, weak wm] point in
+            let overlay = SelectionOverlayWindow(
+                screen: screen,
+                windowAt: { [weak wm] point in wm?.selectWindow(at: point)?.bounds }
+            ) { [weak self, weak wm] point in
                 self?.hideSelectionOverlay()
                 guard let wm else { return }
                 if let point, let window = wm.selectWindow(at: point) { wm.pin(window) }

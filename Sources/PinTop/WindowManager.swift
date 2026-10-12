@@ -1478,18 +1478,30 @@ func exitSelectionMode() {
 
     /// PID of the Dock, or nil while it can't be resolved (probe just skips
     /// the Dock-surface match and falls through to the other signals).
+    // ponytail: cached PIDs. The probe runs every 30ms on the main thread, and
+    // scanning runningApplications on each call was costly. Dock and
+    // WindowManager PIDs basically never change, so resolve them once.
+    private var cachedDockPID: pid_t?
+    private var cachedWindowManagerPID: pid_t?
+
     private func dockProcessID() -> pid_t? {
-        NSWorkspace.shared.runningApplications.first {
-            $0.bundleIdentifier == "com.apple.dock"
-        }?.processIdentifier
+        if cachedDockPID == nil {
+            cachedDockPID = NSWorkspace.shared.runningApplications.first {
+                $0.bundleIdentifier == "com.apple.dock"
+            }?.processIdentifier
+        }
+        return cachedDockPID
     }
 
     /// PID of WindowManager (Stage Manager / exposé compositor), or nil on
     /// releases where it doesn't exist.
     private func windowManagerProcessID() -> pid_t? {
-        NSWorkspace.shared.runningApplications.first {
-            $0.bundleIdentifier == "com.apple.WindowManager"
-        }?.processIdentifier
+        if cachedWindowManagerPID == nil {
+            cachedWindowManagerPID = NSWorkspace.shared.runningApplications.first {
+                $0.bundleIdentifier == "com.apple.WindowManager"
+            }?.processIdentifier
+        }
+        return cachedWindowManagerPID
     }
 
     /// Whether the window-list entry covers a full screen (within 2pt).
@@ -1578,3 +1590,5 @@ func exitSelectionMode() {
         }
     }
 }
+
+
