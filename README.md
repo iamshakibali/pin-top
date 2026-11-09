@@ -70,6 +70,8 @@ See [BUILD.md](BUILD.md) for more on releases.
 3. Click the window you want to keep on top.
 4. That window now stays above everything.
 
+Press **Esc** to cancel window selection.
+
 To unpin: open the menu bar → hover the pinned window → **Unpin**. Or **Clear All** to unpin everything. **Quit Pin Top** (⌘Q) to exit.
 
 ---

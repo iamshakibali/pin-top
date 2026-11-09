@@ -130,6 +130,18 @@ class SelectionOverlayWindow: NSWindow {
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        cancelOperation(nil)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { // Escape
+            cancelOperation(nil)
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    override func cancelOperation(_ sender: Any?) {
         guard isActive else { return }
         isActive = false
         orderOut(nil)
