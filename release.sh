@@ -20,12 +20,20 @@ if pgrep -f "$APP_EXECUTABLE" >/dev/null 2>&1; then
   sleep 1
 fi
 
-swift build -c release
+# Universal (Apple Silicon + Intel): the auto-updater replaces the bundle on
+# every machine, so an arm64-only release would brick Intel installs.
+ARCH_FLAGS=(--arch arm64 --arch x86_64)
+swift build -c release "${ARCH_FLAGS[@]}"
+BIN_PATH="$(swift build -c release "${ARCH_FLAGS[@]}" --show-bin-path)/PinTop"
+if [ "$(lipo -archs "$BIN_PATH")" != "x86_64 arm64" ] && [ "$(lipo -archs "$BIN_PATH")" != "arm64 x86_64" ]; then
+  echo "ERROR: expected a universal binary, got: $(lipo -archs "$BIN_PATH")" >&2
+  exit 1
+fi
 
 # Rewrite the Mach-O + Info.plist in place (keeps TCC designator stable).
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
-cp .build/release/PinTop "$APP/Contents/MacOS/PinTop"
+cp "$BIN_PATH" "$APP/Contents/MacOS/PinTop"
 cp Sources/PinTop/Resources/PinTop.icns "$APP/Contents/Resources/PinTop.icns"
 
 # Strip local symbols for a smaller, cleaner distributable.
