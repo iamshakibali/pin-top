@@ -8,18 +8,10 @@ class PinOverlayWindow: NSWindow {
     let windowID: CGWindowID
     private let pid: pid_t
 
-    // macOS 26 draws a 1pt black outline just OUTSIDE kCGWindowBounds and a
-    // 1pt gray hairline OVER the window's outermost content row/col (measured
-    // against exposed windows: black at minX-1/minY-1/maxX/maxY, gray at the
-    // bounds edge). The captured bitmap contains neither — it is pure window
-    // buffer — so a pin sized exactly to the bounds shows the real window's
-    // black outline peeking out behind it on all sides (the "double edge"),
-    // and its own edge reads raw where the real window shows the gray ring.
-    // The overlay therefore grows 1pt past the bounds on every side and
-    // draws both rings itself: when the pin sits pixel-aligned over the real
-    // window the rings land exactly on the real ones; when it floats, the
-    // pin still reads as a native window edge.
-    static let outlineMargin: CGFloat = 1
+    // No drawn edge: the pin is sized exactly to the source window's bounds
+    // and shows only the snapshot (plus the window-server shadow). Kept as a
+    // named constant so the frame math below stays in one place.
+    static let outlineMargin: CGFloat = 0
 
     init(frame: CGRect, snapshot: NSImage, windowID: CGWindowID, pid: pid_t, cornerRadius: CGFloat) {
         self.windowID = windowID
@@ -61,26 +53,11 @@ class PinOverlayWindow: NSWindow {
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         self.acceptsMouseMovedEvents = false
 
-        // Configure content. The container hosts the snapshot at a 1pt inset
-        // (the outline margin) and draws the two edge rings above it. The
-        // image view is sized to the bitmap's own point size (never stretched
-        // to the window frame) so every draw is 1:1 — see updateSnapshot.
-        let container = OutlineContainerView(frame: NSRect(origin: .zero, size: self.frame.size))
+        // Configure content. The image view is sized to the bitmap's own
+        // point size (never stretched to the window frame) so every draw is
+        // 1:1 — see updateSnapshot.
+        let container = NSView(frame: NSRect(origin: .zero, size: self.frame.size))
         container.wantsLayer = true
-        container.cornerRadius = cornerRadius
-        // Outer edge = filled black shape, not a 1pt stroke. The real window's
-        // outline follows Apple's continuous corner curve, which a circular
-        // stroke path can't track — at corners the stroke diverges and the
-        // real outline (also black) peeked out as a second arc. A filled shape
-        // whose radius runs 2pt ahead of the bitmap's clip covers the whole
-        // mismatch with black: on straight edges only the outermost 1pt shows
-        // (the bitmap sits above the fill), at corners a slightly thicker
-        // black crescent shows — exactly where the real outline is black too.
-        container.cornerFill.fillColor = NSColor.black.cgColor
-        container.cornerFill.strokeColor = NSColor.clear.cgColor
-        container.innerRing.strokeColor = NSColor(calibratedRed: 0.32, green: 0.335, blue: 0.35, alpha: 1).cgColor
-        container.innerRing.fillColor = NSColor.clear.cgColor
-        container.innerRing.lineWidth = 1
 
         imageView.image = snapshot
         imageView.frame = NSRect(origin: CGPoint(x: margin, y: margin), size: snapshot.size)
@@ -100,12 +77,6 @@ class PinOverlayWindow: NSWindow {
         imageView.layer?.masksToBounds = true
 
         container.addSubview(imageView)
-        // Edge layers added AFTER the image view so they composite above the
-        // snapshot's edge — the black fill shows in the 1pt margin and at the
-        // bitmap's transparent corners, the gray ring overdraws the bitmap's
-        // outermost row/col exactly where the real window wears its hairline.
-        container.layer?.addSublayer(container.cornerFill)
-        container.layer?.addSublayer(container.innerRing)
         self.contentView = container
     }
 
@@ -169,39 +140,4 @@ class PinOverlayWindow: NSWindow {
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
-}
-
-// MARK: - OutlineContainerView
-
-/// Hosts the snapshot plus the two edge rings (see outlineMargin on
-/// PinOverlayWindow). Rebuilds the ring paths on every layout pass so they
-/// track resizes; the paths are stroked at half-pixel insets so each 1pt
-/// ring lands exactly on one pixel row of the window surface.
-private final class OutlineContainerView: NSView {
-    let cornerFill = CAShapeLayer()
-    let innerRing = CAShapeLayer()
-    var cornerRadius: CGFloat = 0
-
-    override func layout() {
-        super.layout()
-        let b = bounds
-        cornerFill.frame = b
-        innerRing.frame = b
-        let r = cornerRadius
-        // Fill: covers the full inflated frame minus nothing — the bitmap
-        // (inset 1) hides all of it except the outer 1pt rim and the corner
-        // crescents beyond the bitmap's own rounded-corner alpha.
-        cornerFill.path = CGPath(
-            roundedRect: b,
-            cornerWidth: r + 2,
-            cornerHeight: r + 2,
-            transform: nil
-        )
-        innerRing.path = CGPath(
-            roundedRect: b.insetBy(dx: 1.5, dy: 1.5),
-            cornerWidth: max(r - 0.5, 0),
-            cornerHeight: max(r - 0.5, 0),
-            transform: nil
-        )
-    }
 }

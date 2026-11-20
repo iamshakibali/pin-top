@@ -1133,13 +1133,23 @@ func exitSelectionMode() {
         // out of its way to use a cheap per-window lookup for exactly this
         // reason; a full scan at 60Hz made the click→front path feel delayed.
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        // Left button held = a user drag may be in progress. Cheap (no
+        // WindowServer round-trip), read once per tick.
+        let primaryButtonDown = (NSEvent.pressedMouseButtons & 1) != 0
+        // While any pin is drag-hidden, the user is moving a window: skip the
+        // full window-list probes below. Each is a synchronous WindowServer
+        // round-trip on main, and running them at 33Hz while the server is
+        // busy compositing the drag made the drag itself stutter. The
+        // overlays they'd gate are hidden for the drag anyway, and the
+        // AXExpose notifications still catch a mid-drag Mission Control.
+        let dragInProgress = !dragHiddenOverlays.isEmpty
 
         // Iterate over a copy: removing from a Set while iterating it can crash.
         // Probe the system-overview state once per scan window, not per pin.
         // Open on the FIRST high sample (hide fast); require three
         // consecutive low samples to close (mid-overview redraws dip low
         // momentarily — re-showing on one would blink during the overview).
-        if (now - lastOverviewProbeTime) >= overviewProbeInterval {
+        if !dragInProgress, (now - lastOverviewProbeTime) >= overviewProbeInterval {
             lastOverviewProbeTime = now
             if systemOverviewProbe() {
                 overviewCloseStreak = 0
@@ -1187,7 +1197,11 @@ func exitSelectionMode() {
             // buried pinned window (pin vanished — "always-on-top not
             // working"), and a raised-but-not-focused window got the overlay
             // re-shown over the exposed real window (flash/double image).
-            if (now - (lastOcclusionScanTime[window.id] ?? 0)) >= occlusionScanInterval {
+            // Skipped for a drag-hidden pin: its overlay is ordered out and
+            // the window under the cursor is by definition exposed. The scan
+            // is forced fresh when the drag ends (see the restore below).
+            if !dragHiddenOverlays.contains(window.id),
+               (now - (lastOcclusionScanTime[window.id] ?? 0)) >= occlusionScanInterval {
                 lastOcclusionScanTime[window.id] = now
                 var hide: Bool
                 var reason: String
@@ -1322,9 +1336,14 @@ func exitSelectionMode() {
                 dragHiddenOverlays.insert(window.id)
                 overlay.orderOut(nil)
             }
-        } else if dragHiddenOverlays.contains(window.id), settledTicks >= 2 {
+        } else if dragHiddenOverlays.contains(window.id), settledTicks >= 2, !primaryButtonDown {
+            // Restore only once the button is released, not on the first
+            // 32ms pause: a pause mid-drag used to re-show the overlay and
+            // force a full recapture, then the next movement hid it again —
+            // order-in/order-out + capture churn for every hesitation.
             dragHiddenOverlays.remove(window.id)
             moveSettleStreaks[window.id] = nil
+            lastOcclusionScanTime[window.id] = 0 // re-check exposure now
             if !hiddenOverlays.contains(window.id) {
                 overlay.orderFrontRegardless()
                 lastRecaptureTime[window.id] = 0 // fresh snapshot at rest
@@ -1374,7 +1393,11 @@ func exitSelectionMode() {
         // Content is identical on a move, so the existing bitmap is still valid —
         // a mid-move bitmap swap only flickers. Idle refresh resumes once stationary.
         let idleRecaptureActive = idleRecaptureDue && !boundsChanged
-        let shouldRecapture = idleRecaptureActive || (sizeChanged && resizeRecaptureDue) || settleRecaptureDue
+        // A drag-hidden overlay isn't on screen — capturing for it (the
+        // active-use cadence is 80ms) would just burn WindowServer time
+        // mid-drag. Restore forces a fresh capture on the next tick.
+        let shouldRecapture = !dragHiddenOverlays.contains(window.id)
+            && (idleRecaptureActive || (sizeChanged && resizeRecaptureDue) || settleRecaptureDue)
         if shouldRecapture {
             // Stamp recapture time NOW so we don't queue back-to-back captures
             // for the same window if the capture itself takes a while.
