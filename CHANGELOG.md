@@ -12,6 +12,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-monitor / Space awareness
 - Migrate from deprecated `CGWindowListCreateImage` to ScreenCaptureKit for forward compatibility with future macOS releases
 
+## [0.6.2] — 2026-11-20
+
+Cleaner pin edges and smoother drags.
+
+### Changed
+- **Pins no longer draw a border.** The overlay used to paint a solid black
+  rim and a gray hairline to imitate macOS's dark-window edge, which read
+  as a heavy black frame around light windows. The pin is now sized exactly
+  to the source window and shows only the snapshot and its shadow.
+- Settings use grouped System Settings-style sections with switch toggles;
+  pin mode keeps its crosshair cursor, dims more strongly, and cuts out the
+  window under the cursor (#19).
+
+### Fixed
+- **Dragging a pinned window is smoother.** The overlay now stays hidden
+  until the mouse button is released instead of reappearing — and taking a
+  fresh capture — on every brief pause mid-drag. The Mission Control probe,
+  occlusion scan and snapshot recaptures are skipped while a drag is in
+  progress, so they no longer compete with the window server during the
+  drag.
+
 ## [0.6.1] — 2026-10-05
 
 Drag-ghosting and permission-stability fixes.
